@@ -1,3 +1,4 @@
+import datetime
 import json
 import sqlite3
 import streamlit as st
@@ -52,9 +53,10 @@ def init_db():
                 owner_username TEXT PRIMARY KEY,
                 name TEXT,
                 penname TEXT,
+                discord TEXT,
+                generation TEXT,
                 phone TEXT,
                 instagram TEXT,
-                discord TEXT,
                 grad_year TEXT,
                 meikyoku_roles TEXT,
                 career_path TEXT,
@@ -86,7 +88,7 @@ def init_db():
             )
         """)
 
-    # 初期テストユーザーの登録（松田夏奈さんを含む）
+    # 初期テストユーザーの登録
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
       c.executemany(
@@ -180,15 +182,16 @@ def save_user_record(username, record_dict):
     conn.execute(
         """
             INSERT INTO records (
-                owner_username, name, penname, phone, instagram, discord,
+                owner_username, name, penname, discord, generation, phone, instagram,
                 grad_year, meikyoku_roles, career_path, status, data_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_username) DO UPDATE SET
                 name=excluded.name,
                 penname=excluded.penname,
+                discord=excluded.discord,
+                generation=excluded.generation,
                 phone=excluded.phone,
                 instagram=excluded.instagram,
-                discord=excluded.discord,
                 grad_year=excluded.grad_year,
                 meikyoku_roles=excluded.meikyoku_roles,
                 career_path=excluded.career_path,
@@ -199,9 +202,10 @@ def save_user_record(username, record_dict):
             username,
             record_dict.get("name"),
             record_dict.get("penname"),
+            record_dict.get("discord"),
+            record_dict.get("generation"),
             record_dict.get("phone"),
             record_dict.get("instagram"),
-            record_dict.get("discord"),
             record_dict.get("grad_year"),
             roles_str,
             record_dict.get("career_path"),
@@ -274,6 +278,36 @@ def get_questions_and_answers():
     return result
 
 
+# 期生を数値化してソートするためのヘルパー関数
+def get_gen_sort_key(gen_str):
+  if not gen_str:
+    return 999
+  # "1〜2期生" や "3期生" から数字を抽出
+  import re
+
+  nums = re.findall(r"\d+", gen_str)
+  if nums:
+    return int(nums[0])
+  return 999
+
+
+# 期生が卒業メンバーか現役メンバーかを判定する関数 (5期生までが卒業)
+def is_graduated_generation(gen_str):
+  if not gen_str:
+    return False
+  # 「1〜2期」「3期」「4期」「5期」が含まれる場合は卒業生
+  for g in ["1〜2期", "1-2期", "3期", "4期", "5期"]:
+    if g in gen_str:
+      return True
+  # 数値が5以下なら卒業生とみなす
+  import re
+
+  nums = re.findall(r"\d+", gen_str)
+  if nums and int(nums[0]) <= 5:
+    return True
+  return False
+
+
 # ==========================================
 # 1. ログイン & 新規ユーザー登録画面
 # ==========================================
@@ -291,7 +325,7 @@ if st.session_state.logged_in_user is None:
     with auth_tab1:
       with st.form("login_form"):
         st.subheader("ログイン")
-        username_input = st.text_input("ユーザー名（Discord ID）")
+        username_input = st.text_input("Discord ID（ユーザー名）")
         pass_input = st.text_input("パスワード", type="password")
         submit_login = st.form_submit_button(
             "ログインする", use_container_width=True, type="primary"
@@ -321,13 +355,13 @@ if st.session_state.logged_in_user is None:
       with st.form("signup_form"):
         st.subheader("新規アカウント作成")
         new_username = st.text_input(
-            "Discord ID *", placeholder="例: yamada_t / taro123"
+            "Discord ID *", placeholder="例: taro123"
         )
         new_name = st.text_input(
-            "表示名（本名）*", placeholder="例: 山田 太郎"
+            "名前（本名）*", placeholder="例: 山田 太郎"
         )
         new_penname = st.text_input(
-            "表示名（メイキョクネーム）*", placeholder="例: ヤマタツ"
+            "メイキョクネーム *", placeholder="例: ヤマタツ"
         )
         new_pass = st.text_input("パスワード *", type="password")
         new_pass_confirm = st.text_input(
@@ -339,10 +373,15 @@ if st.session_state.logged_in_user is None:
         )
 
         if submit_signup:
-          if not new_username or not new_name or not new_pass:
+          if (
+              not new_username
+              or not new_name
+              or not new_penname
+              or not new_pass
+          ):
             st.error("すべての必須項目を入力してください。")
           elif get_user(new_username):
-            st.error("このユーザー名はすでに使われています。")
+            st.error("このDiscord IDはすでに使われています。")
           elif new_pass != new_pass_confirm:
             st.error("確認用パスワードが一致しません。")
           else:
@@ -353,10 +392,17 @@ if st.session_state.logged_in_user is None:
                 "penname": new_penname,
                 "role": "member",
             }
-            st.success("アカウントを作成しました！")
+            st.success(
+                "アカウントを作成しました！続いて自分の情報を登録してください。"
+            )
             st.rerun()
 
-    st.stop()
+    st.info(
+        "💡 **動作確認用アカウント:**\n"
+        "- 松田夏奈 ID: `lil_3316` / パスワード: `08044713515` (管理者)\n"
+        "- 一般メンバー ID: `yamada` / パスワード: `pass123`"
+    )
+  st.stop()
 
 # ==========================================
 # 2. ログイン後のメイン画面
@@ -374,15 +420,16 @@ def show_user_profile(target_username):
 
   st.subheader(f"{target_record['name']}（{target_record.get('penname', '')}）")
   st.write(
-      f"**卒業年:** {target_record.get('grad_year', '-')} | **進路:**"
+      f"**期生:** {target_record.get('generation', '-')} | **卒業年:**"
+      f" {target_record.get('grad_year', '-')} | **進路:**"
       f" {target_record.get('career_path', '-')}"
   )
   roles_str = ", ".join(target_record.get("meikyoku_roles", []))
   st.write(f"**メイキョクでの役割:** {roles_str}")
   st.write(
-      f"📞 **連絡先:** 電話: {target_record.get('phone', '-')} | Insta:"
-      f" {target_record.get('instagram', '-')} | Discord:"
-      f" {target_record.get('discord', '-')}"
+      f"📞 **連絡先:** Discord: `{target_record.get('discord', '-')}` | 電話:"
+      f" {target_record.get('phone', '-')} | Insta:"
+      f" {target_record.get('instagram', '-')}"
   )
   st.markdown("---")
 
@@ -483,6 +530,88 @@ selected_tab = st.radio(
 
 st.session_state.active_tab = selected_tab
 
+
+# 共通カード表示関数（一覧用）
+def render_member_card(item):
+  roles_str = (
+      ", ".join(item.get("meikyoku_roles", []))
+      if item.get("meikyoku_roles")
+      else "未登録"
+  )
+  with st.expander(
+      f"👤 [{item.get('generation', '期生不明')]) {item['name']} /"
+      f" {item.get('penname', '未設定')}（{item['grad_year']}卒 /"
+      f" {item['career_path']}）"
+  ):
+    st.markdown(
+        f"**本名:** {item['name']} | **メイキョクネーム:**"
+        f" {item.get('penname', '未設定')} | **期生:**"
+        f" {item.get('generation', '未設定')}"
+    )
+    st.markdown(f"**メイキョクでの役職・業務:** {roles_str}")
+    st.markdown(
+        f"📞 **連絡先:** Discord: `{item.get('discord', '-')}` | 電話:"
+        f" `{item.get('phone', '-')}` | Instagram:"
+        f" `{item.get('instagram', '-')}`"
+    )
+    st.markdown("---")
+
+    path = item.get("career_path")
+    if path == "就職":
+      col_a, col_b = st.columns(2)
+      with col_a:
+        st.write(
+            f"**🏢 入社確定先:** {item.get('company_joined', '未記入')}"
+        )
+        st.write(f"**🎯 内定先:** {item.get('offers', '未記入')}")
+        st.write(
+            f"**💼 インターン先:** {item.get('internships', '未記入')}"
+        )
+      with col_b:
+        st.write(
+            f"**🌐 志望業界:** {item.get('target_industry', '未記入')}"
+        )
+        st.write(
+            f"**⚙️ 志望職種:** {item.get('target_occupation', '未記入')}"
+        )
+
+      st.write(f"**💡 就活の軸（本音）:** {item.get('axis_real', '未記入')}")
+      st.write(
+          f"**📢 就活の軸（建前）:** {item.get('axis_official', '未記入')}"
+      )
+      st.write(
+          f"**🎯 入社決定理由:** {item.get('decision_reason', '未記入')}"
+      )
+      st.write(f"・**自己分析Tips:** {item.get('tips_self', '未記入')}")
+      st.write(f"・**ES Tips:** {item.get('tips_es', '未記入')}")
+      st.write(f"・**面接Tips:** {item.get('tips_interview', '未記入')}")
+
+      with st.expander("📄 自己PR・志望動機・ガクチカを見る"):
+        st.write(f"**【自己PR】**\n{item.get('pr_text', '未記入')}")
+        st.write(
+            f"**【志望動機】**\n{item.get('motivation_text', '未記入')}"
+        )
+        st.write(
+            f"**【メイキョクでのガクチカ】**\n{item.get('gakuchika', '未記入')}"
+        )
+
+    elif path == "進学":
+      st.write(f"**進学先:** {item.get('grad_school', '未記入')}")
+      st.write(
+          f"**留意したこと:** {item.get('grad_choice_reason', '未記入')}"
+      )
+      st.write(
+          f"**進学のアドバイス:** {item.get('grad_advice', '未記入')}"
+      )
+
+    elif path == "起業":
+      st.write(f"**起業企業名:** {item.get('startup_name', '未記入')}")
+      st.write(
+          f"**（起業の）業界:** {item.get('startup_industry', '未記入')}"
+      )
+      st.write(f"**起業理由:** {item.get('startup_reason', '未記入')}")
+
+
 # --- タブ1: 一覧表示 ---
 if selected_tab == "📋 登録情報一覧（トップ）":
   st.subheader("🔍 登録情報の一覧・絞り込み検索")
@@ -514,93 +643,40 @@ if selected_tab == "📋 登録情報一覧（トップ）":
         d for d in filtered_data if search_keyword.lower() in str(d).lower()
     ]
 
+  # 期生の数字が小さい順（先輩順）にソート
+  filtered_data.sort(key=lambda x: get_gen_sort_key(x.get("generation", "")))
+
   st.write(f"該当件数: **{len(filtered_data)} 件**")
+  st.markdown("---")
 
-  for item in filtered_data:
-    roles_str = (
-        ", ".join(item.get("meikyoku_roles", []))
-        if item.get("meikyoku_roles")
-        else "未登録"
-    )
-    with st.expander(
-        f"👤 {item['name']} / {item.get('penname', '未設定')}（{item['grad_year']}卒"
-        f" / {item['career_path']}）"
-    ):
-      st.markdown(
-          f"**本名:** {item['name']} | **メイキョクネーム:**"
-          f" {item.get('penname', '未設定')}"
-      )
-      st.markdown(f"**メイキョクでの役職・業務:** {roles_str}")
-      st.markdown(
-          f"📞 **連絡先:** 電話: `{item.get('phone', '-')}` | Instagram:"
-          f" `{item.get('instagram', '-')}` | Discord:"
-          f" `{item.get('discord', '-')}`"
-      )
-      st.markdown("---")
+  # 現役メンバーと卒業メンバーに分類
+  graduated_list = [
+      d for d in filtered_data if is_graduated_generation(d.get("generation"))
+  ]
+  current_list = [
+      d
+      for d in filtered_data
+      if not is_graduated_generation(d.get("generation"))
+  ]
 
-      path = item.get("career_path")
-      if path == "就職":
-        col_a, col_b = st.columns(2)
-        with col_a:
-          st.write(
-              f"**🏢 入社確定先:** {item.get('company_joined', '未記入')}"
-          )
-          st.write(f"**🎯 内定先:** {item.get('offers', '未記入')}")
-          st.write(
-              f"**💼 インターン先:** {item.get('internships', '未記入')}"
-          )
-        with col_b:
-          st.write(
-              f"**🌐 志望業界:** {item.get('target_industry', '未記入')}"
-          )
-          st.write(
-              f"**⚙️ 志望職種:** {item.get('target_occupation', '未記入')}"
-          )
+  list_tab1, list_tab2 = st.tabs([
+      f"🎓 卒業メンバー（{len(graduated_list)}件）",
+      f"🏫 現役メンバー（{len(current_list)}件）",
+  ])
 
-        st.write(
-            f"**💡 就活の軸（本音）:** {item.get('axis_real', '未記入')}"
-        )
-        st.write(
-            f"**📢 就活の軸（建前）:**"
-            f" {item.get('axis_official', '未記入')}"
-        )
-        st.write(
-            f"**🎯 入社決定理由:**"
-            f" {item.get('decision_reason', '未記入')}"
-        )
-        st.write(f"・**自己分析Tips:** {item.get('tips_self', '未記入')}")
-        st.write(f"・**ES Tips:** {item.get('tips_es', '未記入')}")
-        st.write(
-            f"・**面接Tips:** {item.get('tips_interview', '未記入')}"
-        )
+  with list_tab1:
+    if graduated_list:
+      for item in graduated_list:
+        render_member_card(item)
+    else:
+      st.info("該当する卒業メンバーはいません。")
 
-        with st.expander("📄 自己PR・志望動機・ガクチカを見る"):
-          st.write(f"**【自己PR】**\n{item.get('pr_text', '未記入')}")
-          st.write(
-              f"**【志望動機】**\n{item.get('motivation_text', '未記入')}"
-          )
-          st.write(
-              f"**【メイキョクでのガクチカ】**\n{item.get('gakuchika', '未記入')}"
-          )
-
-      elif path == "進学":
-        st.write(f"**進学先:** {item.get('grad_school', '未記入')}")
-        st.write(
-            f"**留意したこと:**"
-            f" {item.get('grad_choice_reason', '未記入')}"
-        )
-        st.write(
-            f"**進学のアドバイス:** {item.get('grad_advice', '未記入')}"
-        )
-
-      elif path == "起業":
-        st.write(
-            f"**起業企業名:** {item.get('startup_name', '未記入')}"
-        )
-        st.write(
-            f"**（起業の）業界:** {item.get('startup_industry', '未記入')}"
-        )
-        st.write(f"**起業理由:** {item.get('startup_reason', '未記入')}")
+  with list_tab2:
+    if current_list:
+      for item in current_list:
+        render_member_card(item)
+    else:
+      st.info("該当する現役メンバーはいません。")
 
 # --- タブ2: 自分の情報登録 ---
 elif selected_tab == "📝 自分の情報登録・編集":
@@ -616,7 +692,7 @@ elif selected_tab == "📝 自分の情報登録・編集":
   def get_val(key, default=""):
     return my_record.get(key, default) if my_record else default
 
-  st.markdown("### 1. 基本情報")
+  st.markdown("### 1. 基本情報（必須）")
   col_name1, col_name2 = st.columns(2)
   with col_name1:
     name = st.text_input("名前（本名）*", value=get_val("name", user["name"]))
@@ -627,11 +703,32 @@ elif selected_tab == "📝 自分の情報登録・編集":
 
   col_c1, col_c2, col_c3 = st.columns(3)
   with col_c1:
-    phone = st.text_input("電話番号", value=get_val("phone", ""))
+    discord = st.text_input(
+        "Discord ID *", value=get_val("discord", user["username"])
+    )
   with col_c2:
-    instagram = st.text_input("Instagram ID", value=get_val("instagram", ""))
+    generation_options = [
+        "1〜2期生",
+        "3期生",
+        "4期生",
+        "5期生",
+        "6期生",
+        "7期生",
+        "8期生",
+        "9期生",
+        "10期生+",
+    ]
+    gen_val = get_val("generation", "5期生")
+    gen_idx = (
+        generation_options.index(gen_val)
+        if gen_val in generation_options
+        else 3
+    )
+    generation = st.selectbox("何期生か *", generation_options, index=gen_idx)
   with col_c3:
-    discord = st.text_input("Discord ID", value=get_val("discord", ""))
+    phone = st.text_input("電話番号", value=get_val("phone", ""))
+
+  instagram = st.text_input("Instagram ID", value=get_val("instagram", ""))
 
   grad_years_list = [f"{y}年" for y in range(2020, 2033)] + ["その他 / 既卒"]
   current_year_idx = (
@@ -736,14 +833,16 @@ elif selected_tab == "📝 自分の情報登録・編集":
   st.markdown("---")
   col_btn1, col_btn2 = st.columns(2)
 
+
   def handle_save(status_type):
     record_dict = {
         "owner_username": user["username"],
         "name": name,
         "penname": penname,
+        "discord": discord,
+        "generation": generation,
         "phone": phone,
         "instagram": instagram,
-        "discord": discord,
         "grad_year": grad_year,
         "meikyoku_roles": meikyoku_roles,
         "career_path": career_path,
@@ -751,6 +850,7 @@ elif selected_tab == "📝 自分の情報登録・編集":
         **form_data,
     }
     save_user_record(user["username"], record_dict)
+
 
   with col_btn1:
     if st.button("💾 下書き保存する", use_container_width=True):
@@ -765,18 +865,29 @@ elif selected_tab == "📝 自分の情報登録・編集":
       st.toast("情報を公開保存し、一覧ページへ移動しました！")
       st.rerun()
 
-# --- タブ3: 質問箱 ---
+# --- タブ3: 質問箱（リニューアル） ---
 elif selected_tab == "💬 質問箱":
-  st.subheader("💬 質問箱（Q&A）")
+  st.subheader("💬 質問箱（Q&Aボード）")
+  st.write(
+      "就活や進路についての疑問を投稿したり、先輩や仲間からの回答を確認できます。"
+  )
 
-  with st.expander("➕ 新しい質問を投稿する", expanded=False):
+  # 新規質問投稿エリア（すっきりとしたカード風デザイン）
+  with st.container(border=True):
+    st.markdown("#### ✍️ 新しい質問を投稿する")
     with st.form("new_question_form"):
       q_input = st.text_area(
-          "質問内容を入力してください",
-          placeholder="例: インターン面接の服装で気をつけた点を知りたいです！",
+          "質問内容",
+          placeholder="例: IT業界のインターンで評価されるポイントを教えてください！",
+          label_visibility="collapsed",
       )
-      is_q_anon = st.checkbox("匿名で質問を投稿する", value=True)
-      submit_q = st.form_submit_button("質問を送信する", type="primary")
+      col_q1, col_q2 = st.columns([3, 1])
+      with col_q1:
+        is_q_anon = st.checkbox("匿名で質問を投稿する", value=True)
+      with col_q2:
+        submit_q = st.form_submit_button(
+            "質問を送信", type="primary", use_container_width=True
+        )
 
       if submit_q and q_input:
         asker = (
@@ -787,43 +898,56 @@ elif selected_tab == "💬 質問箱":
         st.rerun()
 
   st.markdown("---")
-  st.markdown("### ❓ 寄せられた質問と回答一覧")
+  st.markdown("### 📬 質問＆回答一覧")
 
   questions_data = get_questions_and_answers()
+  if not questions_data:
+    st.info("現在、投稿された質問はありません。最初の質問を投稿してみましょう！")
+
   for q in questions_data:
-    with st.container():
-      st.markdown(f"#### ❓ {q['content']}")
-      st.caption(f"投稿者: {q['asker_name']}")
+    with st.container(border=True):
+      # 質問ヘッダー
+      st.markdown(f"### ❓ {q['content']}")
+      st.caption(f"投稿者: **{q['asker_name']}**")
 
+      # 回答セクション
       if q["answers"]:
-        st.markdown("**【回答一覧】**")
+        st.markdown(f"**💬 回答 ({len(q['answers'])}件)**")
         for ans in q["answers"]:
-          col_ans1, col_ans2 = st.columns([1, 8])
-          with col_ans1:
-            if ans["is_anonymous"]:
-              st.write("👤 **匿名**")
-            else:
-              if st.button(
-                  f"👤 {ans['name']}",
-                  key=(
-                      f"user_btn_{q['id']}_{ans['username']}_{ans['content'][:5]}"
-                  ),
-              ):
-                show_user_profile(ans["username"])
-          with col_ans2:
-            st.info(ans["content"])
+          with st.container():
+            col_ans1, col_ans2 = st.columns([2, 8])
+            with col_ans1:
+              if ans["is_anonymous"]:
+                st.write("👤 **匿名回答**")
+              else:
+                if st.button(
+                    f"👤 {ans['name']}",
+                    key=(
+                        f"user_btn_{q['id']}_{ans['username']}_{ans['content'][:5]}"
+                    ),
+                ):
+                  show_user_profile(ans["username"])
+            with col_ans2:
+              st.info(ans["content"])
       else:
-        st.caption("まだ回答はありません。")
+        st.caption("💬 まだ回答はありません。最初の回答をしてみませんか？")
 
-      with st.expander("💬 この質問に回答する", expanded=False):
+      # 回答投稿用フォーム（アコーディオンでスッキリ収納）
+      with st.expander("✏️ この質問に回答する"):
         with st.form(f"answer_form_{q['id']}"):
           ans_input = st.text_area(
-              "回答を入力してください", key=f"text_{q['id']}"
+              "回答を入力",
+              placeholder="あなたの経験やアドバイスを教えてください",
+              key=f"text_{q['id']}",
+              label_visibility="collapsed",
           )
-          is_ans_anon = st.checkbox(
-              "匿名で回答する", key=f"anon_{q['id']}"
-          )
-          submit_ans = st.form_submit_button("回答を送信する")
+          col_a1, col_a2 = st.columns([3, 1])
+          with col_a1:
+            is_ans_anon = st.checkbox("匿名で回答する", key=f"anon_{q['id']}")
+          with col_a2:
+            submit_ans = st.form_submit_button(
+                "回答を送信", use_container_width=True
+            )
 
           if submit_ans and ans_input:
             add_answer(
@@ -835,8 +959,6 @@ elif selected_tab == "💬 質問箱":
             )
             st.toast("回答を送信しました！")
             st.rerun()
-
-      st.markdown("---")
 
 # --- タブ4: 管理者画面 ---
 elif selected_tab == "⚙️ 管理者画面":
@@ -855,7 +977,6 @@ elif selected_tab == "⚙️ 管理者画面":
       )
 
     with col_u2:
-      # 松田夏奈さん（lil_3316）は管理者を外せないようにする
       if username == "lil_3316":
         st.write("👑 管理者 (固定)")
       else:
