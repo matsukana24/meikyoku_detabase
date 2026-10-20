@@ -1,6 +1,5 @@
 
 import json
-import os
 import re
 import sqlite3
 import hashlib
@@ -13,30 +12,19 @@ st.set_page_config(
     layout="wide"
 )
 
-# ==========================================
-# 0. 設定
-# ==========================================
-
-DB_FILE = os.environ.get("DB_FILE", "database.db")
-PRIMARY_ADMIN = "lil_3316"
+DB_FILE = "database.db"
+ADMIN_ID = "admin"
+ADMIN_INITIAL_PASSWORD = "admin1020"
 
 GENERATIONS = [
     "1〜2期生", "3期生", "4期生", "5期生",
     "6期生", "7期生", "8期生", "9期生", "10期生+"
 ]
+YEARS = [f"{y}年" for y in range(2020, 2033)] + ["その他 / 既卒"]
+ROLES = ["代表", "副代表", "営業", "イベント企画", "SNS", "開発", "記事"]
+PATHS = ["就職", "進学", "起業"]
 
-GRAD_YEARS = [
-    f"{year}年" for year in range(2020, 2033)
-] + ["その他 / 既卒"]
-
-ROLE_OPTIONS = [
-    "代表", "副代表", "営業", "イベント企画",
-    "SNS", "開発", "記事"
-]
-
-CAREER_PATHS = ["就職", "進学", "起業"]
-
-CAREER_FIELDS = {
+DETAIL_FIELDS = {
     "就職": {
         "company_joined": "入社先",
         "offers": "内定先",
@@ -51,60 +39,46 @@ CAREER_FIELDS = {
         "tips_interview": "面接Tips",
         "pr_text": "自己PR",
         "motivation_text": "志望動機",
-        "gakuchika": "メイキョクでのガクチカ",
+        "gakuchika": "メイキョクでのガクチカ"
     },
     "進学": {
         "grad_school": "進学先",
         "grad_choice_reason": "進学先選びで留意したこと",
-        "grad_advice": "進学のアドバイス",
+        "grad_advice": "進学のアドバイス"
     },
     "起業": {
         "startup_name": "起業企業名",
         "startup_industry": "起業の業界",
-        "startup_reason": "起業理由",
-    },
+        "startup_reason": "起業理由"
+    }
 }
 
 
-def load_css(filename):
-    try:
-        with open(filename, "r", encoding="utf-8") as file:
-            st.markdown(
-                f"<style>{file.read()}</style>",
-                unsafe_allow_html=True
-            )
-    except FileNotFoundError:
-        pass
+# ==========================================
+# CSS
+# ==========================================
 
-
-load_css("style.css")
-
-
-def get_connection():
-    conn = sqlite3.connect(DB_FILE, timeout=15)
-    conn.row_factory = sqlite3.Row
-    return conn
+try:
+    with open("style.css", encoding="utf-8") as f:
+        st.markdown(
+            f"<style>{f.read()}</style>",
+            unsafe_allow_html=True
+        )
+except FileNotFoundError:
+    pass
 
 
 # ==========================================
-# 1. パスワード処理
+# パスワード
 # ==========================================
 
 def hash_password(password):
     salt = secrets.token_bytes(16)
     iterations = 600000
-
-    hashed = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt,
-        iterations
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), salt, iterations
     )
-
-    return (
-        f"pbkdf2_sha256${iterations}$"
-        f"{salt.hex()}${hashed.hex()}"
-    )
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
 
 
 def verify_password(password, stored):
@@ -113,35 +87,49 @@ def verify_password(password, stored):
 
     if stored.startswith("pbkdf2_sha256$"):
         try:
-            _, iterations, salt, hashed = stored.split("$")
-
+            _, count, salt, digest = stored.split("$")
             actual = hashlib.pbkdf2_hmac(
                 "sha256",
-                password.encode("utf-8"),
+                password.encode(),
                 bytes.fromhex(salt),
-                int(iterations)
+                int(count)
             )
-
-            return hmac.compare_digest(
-                actual,
-                bytes.fromhex(hashed)
-            )
+            return hmac.compare_digest(actual, bytes.fromhex(digest))
         except (ValueError, TypeError):
             return False
 
-    # 旧バージョンの平文パスワードにも対応
+    # 旧データベースの平文パスワードとの互換性
     return hmac.compare_digest(password, stored)
 
 
 # ==========================================
-# 2. データベース初期化
+# データベース
 # ==========================================
+
+def get_connection():
+    conn = sqlite3.connect(DB_FILE, timeout=15)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def delete_account(conn, username):
+    conn.execute(
+        "DELETE FROM answers WHERE username = ?",
+        (username,)
+    )
+    conn.execute(
+        "DELETE FROM records WHERE owner_username = ?",
+        (username,)
+    )
+    conn.execute(
+        "DELETE FROM users WHERE username = ?",
+        (username,)
+    )
+
 
 def init_db():
     with get_connection() as conn:
-        c = conn.cursor()
-
-        c.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
                 password TEXT NOT NULL,
@@ -152,7 +140,7 @@ def init_db():
             )
         """)
 
-        c.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS records (
                 owner_username TEXT PRIMARY KEY,
                 name TEXT,
@@ -165,13 +153,11 @@ def init_db():
                 meikyoku_roles TEXT,
                 career_path TEXT,
                 status TEXT,
-                data_json TEXT,
-                FOREIGN KEY(owner_username)
-                    REFERENCES users(username)
+                data_json TEXT
             )
         """)
 
-        c.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS questions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 asker_name TEXT,
@@ -179,62 +165,56 @@ def init_db():
             )
         """)
 
-        c.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS answers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 question_id INTEGER,
                 username TEXT,
                 name TEXT,
                 is_anonymous INTEGER,
-                content TEXT,
-                FOREIGN KEY(question_id)
-                    REFERENCES questions(id)
+                content TEXT
             )
         """)
 
-        # 古いデータベースへの対応
         columns = [
-            row["name"]
-            for row in c.execute(
-                "PRAGMA table_info(records)"
-            ).fetchall()
+            row["name"] for row in
+            conn.execute("PRAGMA table_info(records)").fetchall()
         ]
 
         if "generation" not in columns:
-            c.execute(
+            conn.execute(
                 "ALTER TABLE records ADD COLUMN generation TEXT"
             )
 
-        # 既存の管理者アカウントに権限を付与
-        # パスワードは変更しない
-        c.execute("""
-            UPDATE users
-            SET role = 'admin', status = 'active'
-            WHERE username = ?
-        """, (PRIMARY_ADMIN,))
+        # 旧管理者とテストユーザーを一度だけ削除
+        # 山田はIDがyamadaの場合のみ削除する
+        for username in ("lil_3316", "aaaa", "yamada"):
+            delete_account(conn, username)
 
-        # 初期管理者が存在しない場合のみ新規作成
-        # パスワードはRenderの環境変数から取得
-        existing = c.execute(
+        # adminがまだ存在しない場合に新規作成
+        existing = conn.execute(
             "SELECT username FROM users WHERE username = ?",
-            (PRIMARY_ADMIN,)
+            (ADMIN_ID,)
         ).fetchone()
 
-        initial_password = os.environ.get(
-            "ADMIN_INITIAL_PASSWORD", ""
-        )
-
-        if existing is None and initial_password:
-            c.execute("""
+        if existing is None:
+            conn.execute("""
                 INSERT INTO users
                 (username, password, name, penname, role, status)
                 VALUES (?, ?, ?, ?, 'admin', 'active')
             """, (
-                PRIMARY_ADMIN,
-                hash_password(initial_password),
-                "松田夏奈",
-                "まつかな"
+                ADMIN_ID,
+                hash_password(ADMIN_INITIAL_PASSWORD),
+                "管理者",
+                "管理者"
             ))
+        else:
+            # パスワードは変更しない
+            conn.execute("""
+                UPDATE users
+                SET role = 'admin', status = 'active'
+                WHERE username = ?
+            """, (ADMIN_ID,))
 
         conn.commit()
 
@@ -242,114 +222,77 @@ def init_db():
 init_db()
 
 
-# ==========================================
-# 3. データベース操作
-# ==========================================
-
 def get_user(username):
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM users WHERE username = ?",
             (username,)
         ).fetchone()
-
         return dict(row) if row else None
 
 
-def get_all_users():
+def get_users():
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM users ORDER BY username"
-        ).fetchall()
+        return [
+            dict(row) for row in conn.execute(
+                "SELECT * FROM users ORDER BY username"
+            ).fetchall()
+        ]
 
-        return [dict(row) for row in rows]
 
-
-def add_user(username, password, name, penname):
+def create_user(username, password, name, penname):
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO users
             (username, password, name, penname, role, status)
             VALUES (?, ?, ?, ?, 'member', 'active')
-        """, (
-            username,
-            hash_password(password),
-            name,
-            penname
-        ))
-        conn.commit()
+        """, (username, hash_password(password), name, penname))
 
 
-def update_user_password(username, password):
+def update_password(username, password):
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET password = ? WHERE username = ?",
+            (hash_password(password), username)
+        )
+
+
+def update_user(username, name, penname, role=None, status=None):
     with get_connection() as conn:
         conn.execute("""
-            UPDATE users
-            SET password = ?
-            WHERE username = ?
-        """, (
-            hash_password(password),
-            username
-        ))
-        conn.commit()
-
-
-def update_user_role(username, role):
-    if username == PRIMARY_ADMIN:
-        return
-
-    if role not in ("admin", "member"):
-        return
-
-    with get_connection() as conn:
-        conn.execute("""
-            UPDATE users SET role = ?
-            WHERE username = ?
-        """, (role, username))
-        conn.commit()
-
-
-def update_user_status(username, status):
-    if username == PRIMARY_ADMIN:
-        return
-
-    if status not in ("active", "banned"):
-        return
-
-    with get_connection() as conn:
-        conn.execute("""
-            UPDATE users SET status = ?
-            WHERE username = ?
-        """, (status, username))
-        conn.commit()
-
-
-def update_user_basic(username, name, penname):
-    with get_connection() as conn:
-        conn.execute("""
-            UPDATE users
-            SET name = ?, penname = ?
+            UPDATE users SET name = ?, penname = ?
             WHERE username = ?
         """, (name, penname, username))
-        conn.commit()
+
+        if role is not None:
+            conn.execute(
+                "UPDATE users SET role = ? WHERE username = ?",
+                (role, username)
+            )
+
+        if status is not None:
+            conn.execute(
+                "UPDATE users SET status = ? WHERE username = ?",
+                (status, username)
+            )
 
 
-def save_user_record(username, record):
-    data_json = json.dumps(
-        record,
-        ensure_ascii=False
-    )
+def get_record(username):
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT data_json FROM records WHERE owner_username = ?",
+            (username,)
+        ).fetchone()
+        return json.loads(row["data_json"]) if row else None
 
-    roles = ",".join(
-        record.get("meikyoku_roles", [])
-    )
 
+def save_record(username, record):
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO records (
-                owner_username, name, penname,
-                discord, generation, phone, instagram,
-                grad_year, meikyoku_roles,
-                career_path, status, data_json
+                owner_username, name, penname, discord,
+                generation, phone, instagram, grad_year,
+                meikyoku_roles, career_path, status, data_json
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_username) DO UPDATE SET
@@ -373,25 +316,11 @@ def save_user_record(username, record):
             record.get("phone"),
             record.get("instagram"),
             record.get("grad_year"),
-            roles,
+            ",".join(record.get("meikyoku_roles", [])),
             record.get("career_path"),
             record.get("status"),
-            data_json
+            json.dumps(record, ensure_ascii=False)
         ))
-        conn.commit()
-
-
-def get_record_by_username(username):
-    with get_connection() as conn:
-        row = conn.execute("""
-            SELECT data_json FROM records
-            WHERE owner_username = ?
-        """, (username,)).fetchone()
-
-        if row:
-            return json.loads(row["data_json"])
-
-        return None
 
 
 def get_published_records():
@@ -400,103 +329,59 @@ def get_published_records():
             SELECT data_json FROM records
             WHERE status = 'published'
         """).fetchall()
+        return [json.loads(row["data_json"]) for row in rows]
 
-        return [
-            json.loads(row["data_json"])
-            for row in rows
+
+def get_questions():
+    with get_connection() as conn:
+        questions = [
+            dict(q) for q in conn.execute(
+                "SELECT * FROM questions ORDER BY id DESC"
+            ).fetchall()
         ]
-
-
-def add_question(asker_name, content):
-    with get_connection() as conn:
-        conn.execute("""
-            INSERT INTO questions (asker_name, content)
-            VALUES (?, ?)
-        """, (asker_name, content))
-        conn.commit()
-
-
-def add_answer(
-    question_id, username, name,
-    is_anonymous, content
-):
-    with get_connection() as conn:
-        conn.execute("""
-            INSERT INTO answers (
-                question_id, username, name,
-                is_anonymous, content
-            )
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            question_id,
-            username,
-            name,
-            int(is_anonymous),
-            content
-        ))
-        conn.commit()
-
-
-def get_questions_and_answers():
-    with get_connection() as conn:
-        questions = conn.execute("""
-            SELECT * FROM questions
-            ORDER BY id DESC
-        """).fetchall()
-
-        result = []
-
-        for question in questions:
-            item = dict(question)
-
-            answers = conn.execute("""
-                SELECT * FROM answers
-                WHERE question_id = ?
-                ORDER BY id ASC
-            """, (item["id"],)).fetchall()
-
-            item["answers"] = [
-                dict(answer) for answer in answers
+        for q in questions:
+            q["answers"] = [
+                dict(a) for a in conn.execute(
+                    "SELECT * FROM answers WHERE question_id = ? ORDER BY id",
+                    (q["id"],)
+                ).fetchall()
             ]
+        return questions
 
-            result.append(item)
 
-        return result
+def add_question(name, content):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO questions (asker_name, content) VALUES (?, ?)",
+            (name, content)
+        )
+
+
+def add_answer(question_id, username, name, anonymous, content):
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO answers
+            (question_id, username, name, is_anonymous, content)
+            VALUES (?, ?, ?, ?, ?)
+        """, (question_id, username, name, int(anonymous), content))
 
 
 # ==========================================
-# 4. 共通処理
+# 共通処理
 # ==========================================
 
-def selected_index(options, value, default=0):
-    if value in options:
-        return options.index(value)
-    return default
+def option_index(options, value, default=0):
+    return options.index(value) if value in options else default
 
 
-def get_gen_sort_key(generation):
-    numbers = re.findall(
-        r"\d+",
-        generation or ""
-    )
+def generation_number(generation):
+    numbers = re.findall(r"\d+", generation or "")
     return int(numbers[0]) if numbers else 999
 
 
-def is_graduated_generation(generation):
-    if not generation:
-        return False
+def is_graduated(generation):
+    return generation_number(generation) <= 5
 
-    return get_gen_sort_key(generation) <= 5
-
-
-def get_record_value(record, key, default=""):
-    value = record.get(key, default)
-    return default if value is None else value
-
-
-# ==========================================
-# 5. セッション管理
-# ==========================================
 
 if "logged_in_user" not in st.session_state:
     st.session_state.logged_in_user = None
@@ -506,1158 +391,638 @@ if "active_tab" not in st.session_state:
 
 
 # ==========================================
-# 6. ログイン・新規登録
+# ログイン・新規登録
 # ==========================================
 
 if st.session_state.logged_in_user is None:
-
     st.title("🎓 メイキョク 就活・進路データベース")
-    st.write(
-        "サークルメンバー限定サイトです。"
-        "ログインまたは新規登録してください。"
-    )
+    st.write("サークルメンバー限定サイトです。")
 
-    st.markdown("---")
+    _, center, _ = st.columns([1, 2, 1])
 
-    col1, col2, col3 = st.columns([1, 2, 1])
-
-    with col2:
+    with center:
         login_tab, signup_tab = st.tabs([
-            "🔑 ログイン",
-            "✨ 新規ユーザー登録"
+            "🔑 ログイン", "✨ 新規ユーザー登録"
         ])
 
         with login_tab:
-            with st.form("login_form"):
-                st.subheader("ログイン")
-
-                username = st.text_input(
-                    "Discord ID（ユーザー名）"
-                )
-
-                password = st.text_input(
-                    "パスワード",
-                    type="password"
-                )
-
-                submitted = st.form_submit_button(
-                    "ログインする",
-                    type="primary",
+            with st.form("login"):
+                username = st.text_input("Discord ID")
+                password = st.text_input("パスワード", type="password")
+                submit = st.form_submit_button(
+                    "ログインする", type="primary",
                     use_container_width=True
                 )
 
-                if submitted:
+                if submit:
                     account = get_user(username.strip())
 
-                    if (
-                        account
-                        and verify_password(
-                            password,
-                            account["password"]
-                        )
+                    if account and verify_password(
+                        password, account["password"]
                     ):
-                        if account["status"] == "banned":
-                            st.error(
-                                "このアカウントは利用停止中です。"
-                            )
+                        if account["status"] != "active":
+                            st.error("このアカウントは利用停止中です。")
                         else:
-                            # 旧パスワードを安全な形式に更新
+                            # 旧形式のパスワードをハッシュ化
                             if not account["password"].startswith(
                                 "pbkdf2_sha256$"
                             ):
-                                update_user_password(
-                                    account["username"],
-                                    password
-                                )
+                                update_password(account["username"], password)
 
-                            st.session_state.logged_in_user = {
-                                "username": account["username"],
-                                "name": account["name"],
-                                "penname": account["penname"],
-                                "role": account["role"]
-                            }
-
+                            st.session_state.logged_in_user = account["username"]
                             st.rerun()
                     else:
-                        st.error(
-                            "ユーザー名またはパスワードが違います。"
-                        )
+                        st.error("IDまたはパスワードが違います。")
 
         with signup_tab:
-            with st.form("signup_form"):
-                st.subheader("新規アカウント作成")
-
-                new_username = st.text_input(
-                    "Discord ID *"
-                )
-
+            with st.form("signup"):
+                new_id = st.text_input("Discord ID *")
                 new_password = st.text_input(
-                    "パスワード *",
-                    type="password"
+                    "パスワード *", type="password"
                 )
-
                 new_confirm = st.text_input(
-                    "パスワード（確認用）*",
-                    type="password"
+                    "確認用パスワード *", type="password"
                 )
-
-                st.markdown("---")
-
-                new_name = st.text_input(
-                    "名前（本名）*"
-                )
-
-                new_penname = st.text_input(
-                    "メイキョクネーム *"
-                )
-
+                new_name = st.text_input("名前（本名）*")
+                new_penname = st.text_input("メイキョクネーム *")
                 new_generation = st.selectbox(
-                    "何期生か *",
-                    GENERATIONS,
-                    index=3
+                    "何期生か *", GENERATIONS, index=3
                 )
-
-                new_grad_year = st.selectbox(
-                    "卒業年度 *",
-                    GRAD_YEARS,
-                    index=5
+                new_year = st.selectbox(
+                    "卒業年度 *", YEARS, index=5
                 )
-
                 new_roles = st.multiselect(
-                    "メイキョクでの役割・業務 *",
-                    ROLE_OPTIONS
+                    "メイキョクでの役割 *", ROLES
                 )
+                new_path = st.radio("卒業後の進路 *", PATHS)
 
-                new_career = st.radio(
-                    "卒業後の進路 *",
-                    CAREER_PATHS
-                )
-
-                submitted = st.form_submit_button(
+                submit = st.form_submit_button(
                     "登録してログインする",
                     type="primary",
                     use_container_width=True
                 )
 
-                if submitted:
-                    new_username = new_username.strip()
+                if submit:
+                    new_id = new_id.strip()
                     new_name = new_name.strip()
                     new_penname = new_penname.strip()
 
                     if not all([
-                        new_username,
-                        new_password,
-                        new_name,
-                        new_penname,
-                        new_roles
+                        new_id, new_password, new_name,
+                        new_penname, new_roles
                     ]):
-                        st.error(
-                            "必須項目をすべて入力してください。"
-                        )
-
-                    elif new_username == PRIMARY_ADMIN:
-                        st.error(
-                            "このIDは使用できません。"
-                        )
-
-                    elif get_user(new_username):
-                        st.error(
-                            "このDiscord IDは登録済みです。"
-                        )
-
+                        st.error("必須項目を入力してください。")
+                    elif new_id in ("admin", "lil_3316", "aaaa", "yamada"):
+                        st.error("このIDは使用できません。")
+                    elif get_user(new_id):
+                        st.error("このIDはすでに登録されています。")
                     elif new_password != new_confirm:
-                        st.error(
-                            "パスワードが一致しません。"
-                        )
-
+                        st.error("確認用パスワードが一致しません。")
                     else:
-                        add_user(
-                            new_username,
-                            new_password,
-                            new_name,
-                            new_penname
+                        create_user(
+                            new_id, new_password, new_name, new_penname
                         )
-
-                        initial_record = {
-                            "owner_username": new_username,
+                        save_record(new_id, {
+                            "owner_username": new_id,
                             "name": new_name,
                             "penname": new_penname,
-                            "discord": new_username,
+                            "discord": new_id,
                             "generation": new_generation,
+                            "grad_year": new_year,
+                            "meikyoku_roles": new_roles,
+                            "career_path": new_path,
                             "phone": "",
                             "instagram": "",
-                            "grad_year": new_grad_year,
-                            "meikyoku_roles": new_roles,
-                            "career_path": new_career,
                             "status": "draft"
-                        }
-
-                        save_user_record(
-                            new_username,
-                            initial_record
-                        )
-
-                        st.session_state.logged_in_user = {
-                            "username": new_username,
-                            "name": new_name,
-                            "penname": new_penname,
-                            "role": "member"
-                        }
-
+                        })
+                        st.session_state.logged_in_user = new_id
                         st.rerun()
 
     st.stop()
 
 
 # ==========================================
-# 7. ログイン後の権限確認
+# ログイン後の権限確認
 # ==========================================
 
-session_user = st.session_state.logged_in_user
-user = get_user(session_user["username"])
+user = get_user(st.session_state.logged_in_user)
 
 if not user or user["status"] != "active":
     st.session_state.logged_in_user = None
     st.rerun()
 
-# データベースの最新権限を使用
-st.session_state.logged_in_user.update({
-    "name": user["name"],
-    "penname": user["penname"],
-    "role": user["role"]
-})
-
 is_admin = user["role"] == "admin"
 
 
 # ==========================================
-# 8. プロフィール詳細ダイアログ
+# プロフィール編集フォーム
 # ==========================================
 
-@st.dialog("👤 メンバー詳細プロフィール")
-def show_user_profile(target_username):
+def profile_editor(username, key_prefix, administrator=False):
+    target = get_user(username)
 
-    record = get_record_by_username(target_username)
-
-    if not record or record.get("status") != "published":
-        st.warning("プロフィールは未公開です。")
+    if not target:
+        st.error("ユーザーが見つかりません。")
         return
 
-    st.subheader(
-        f"{record.get('name', '')}"
-        f"（{record.get('penname', '')}）"
-    )
+    record = get_record(username) or {}
 
-    st.write(
-        f"**期生:** {record.get('generation', '-')} | "
-        f"**卒業年:** {record.get('grad_year', '-')} | "
-        f"**進路:** {record.get('career_path', '-')}"
-    )
+    def val(key, default=""):
+        value = record.get(key, default)
+        return default if value is None else value
 
-    roles = ", ".join(
-        record.get("meikyoku_roles", [])
-    )
+    with st.form(f"{key_prefix}_profile"):
+        st.markdown("### 基本情報")
 
-    st.write(f"**メイキョクでの役割:** {roles}")
-
-    st.write(
-        f"**Discord:** {record.get('discord', '-')} | "
-        f"**電話:** {record.get('phone', '-')} | "
-        f"**Instagram:** {record.get('instagram', '-')}"
-    )
-
-    st.markdown("---")
-
-    path = record.get("career_path", "")
-
-    for key, label in CAREER_FIELDS.get(path, {}).items():
-        st.write(
-            f"**{label}:** "
-            f"{record.get(key) or '未記入'}"
+        name = st.text_input(
+            "名前（本名）*",
+            value=val("name", target["name"])
+        )
+        penname = st.text_input(
+            "メイキョクネーム *",
+            value=val("penname", target["penname"])
+        )
+        discord = st.text_input(
+            "Discord ID（プロフィール表示用）",
+            value=val("discord", username)
         )
 
-
-# ==========================================
-# 9. 管理者専用ダイアログ
-# ==========================================
-
-@st.dialog("🔑 パスワード変更")
-def show_password_change_dialog(target_username):
-
-    if not is_admin:
-        st.error("管理者のみ操作できます。")
-        return
-
-    st.write(f"対象ID：`{target_username}`")
-
-    with st.form(f"password_{target_username}"):
-        password = st.text_input(
-            "新しいパスワード",
-            type="password"
+        generation = st.selectbox(
+            "期生", GENERATIONS,
+            index=option_index(GENERATIONS, val("generation"), 3)
         )
-
-        confirm = st.text_input(
-            "確認用パスワード",
-            type="password"
-        )
-
-        submitted = st.form_submit_button(
-            "変更する",
-            type="primary"
-        )
-
-        if submitted:
-            if not password:
-                st.error("パスワードを入力してください。")
-            elif password != confirm:
-                st.error("パスワードが一致しません。")
-            else:
-                update_user_password(
-                    target_username,
-                    password
-                )
-                st.success("パスワードを変更しました。")
-
-
-# ==========================================
-# 10. 共通プロフィール編集フォーム
-# ==========================================
-
-def render_profile_form(
-    target_username,
-    target_user,
-    record,
-    form_key,
-    administrator=False
-):
-    record = record or {}
-
-    def value(key, default=""):
-        return get_record_value(record, key, default)
-
-    st.caption(f"対象ユーザー：{target_username}")
-
-    with st.form(form_key):
-
-        st.markdown("### 1. 基本情報")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            name = st.text_input(
-                "名前（本名）*",
-                value=value(
-                    "name",
-                    target_user["name"]
-                )
-            )
-
-        with col2:
-            penname = st.text_input(
-                "メイキョクネーム *",
-                value=value(
-                    "penname",
-                    target_user["penname"]
-                )
-            )
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            discord = st.text_input(
-                "Discord ID（プロフィール表示用）",
-                value=value(
-                    "discord",
-                    target_username
-                )
-            )
-
-        with col2:
-            generation = st.selectbox(
-                "何期生か *",
-                GENERATIONS,
-                index=selected_index(
-                    GENERATIONS,
-                    value("generation", "5期生"),
-                    3
-                )
-            )
-
-        with col3:
-            phone = st.text_input(
-                "電話番号",
-                value=value("phone")
-            )
-
-        instagram = st.text_input(
-            "Instagram ID",
-            value=value("instagram")
-        )
-
         grad_year = st.selectbox(
-            "卒業年 *",
-            GRAD_YEARS,
-            index=selected_index(
-                GRAD_YEARS,
-                value("grad_year", "2025年"),
-                5
-            )
+            "卒業年", YEARS,
+            index=option_index(YEARS, val("grad_year"), 5)
+        )
+        phone = st.text_input("電話番号", value=val("phone"))
+        instagram = st.text_input(
+            "Instagram ID", value=val("instagram")
         )
 
-        previous_roles = value(
-            "meikyoku_roles", []
-        )
-
-        if not isinstance(previous_roles, list):
-            previous_roles = []
+        old_roles = val("meikyoku_roles", [])
+        if not isinstance(old_roles, list):
+            old_roles = []
 
         roles = st.multiselect(
-            "メイキョクでの業務内容 *",
-            ROLE_OPTIONS,
-            default=[
-                role for role in previous_roles
-                if role in ROLE_OPTIONS
-            ]
+            "メイキョクでの業務内容",
+            ROLES,
+            default=[r for r in old_roles if r in ROLES]
         )
 
-        st.markdown("---")
-        st.markdown("### 2. 進路と詳細情報")
+        st.markdown("### 進路情報")
 
         career_path = st.radio(
-            "卒業後の進路 *",
-            CAREER_PATHS,
-            index=selected_index(
-                CAREER_PATHS,
-                value("career_path", "就職")
-            )
+            "卒業後の進路",
+            PATHS,
+            index=option_index(PATHS, val("career_path"))
         )
 
-        # 進路変更前の情報も保持
-        form_data = {}
-
-        for key, label in CAREER_FIELDS[
-            career_path
-        ].items():
-
-            form_data[key] = st.text_area(
-                label,
-                value=value(key)
+        detail_values = {}
+        for field, label in DETAIL_FIELDS[career_path].items():
+            detail_values[field] = st.text_area(
+                label, value=val(field)
             )
-
-        st.markdown("---")
 
         if administrator:
             status = st.selectbox(
                 "公開状態",
                 ["draft", "published"],
-                index=(
-                    1 if value("status") == "published"
-                    else 0
-                ),
-                format_func=lambda x: (
-                    "🟢 公開" if x == "published"
-                    else "🟡 下書き"
+                index=1 if val("status") == "published" else 0,
+                format_func=lambda s: (
+                    "公開" if s == "published" else "下書き"
                 )
             )
-
-            submitted = st.form_submit_button(
-                "💾 変更を保存する",
-                type="primary",
-                use_container_width=True
+            save = st.form_submit_button(
+                "変更を保存する", type="primary"
             )
-
         else:
             col1, col2 = st.columns(2)
-
             with col1:
-                save_draft = st.form_submit_button(
-                    "💾 下書き保存する",
-                    use_container_width=True
-                )
-
+                draft = st.form_submit_button("下書き保存")
             with col2:
                 publish = st.form_submit_button(
-                    "🚀 公開して保存する",
-                    type="primary",
-                    use_container_width=True
+                    "公開して保存", type="primary"
                 )
-
-            submitted = save_draft or publish
+            save = draft or publish
             status = "published" if publish else "draft"
 
-        if submitted:
-
+        if save:
             if not name.strip() or not penname.strip():
-                st.error(
-                    "名前とメイキョクネームは必須です。"
-                )
-                return
-
-            if not roles:
-                st.error(
-                    "メイキョクでの業務内容を選択してください。"
-                )
-                return
-
-            updated = dict(record)
-
-            updated.update({
-                "owner_username": target_username,
-                "name": name.strip(),
-                "penname": penname.strip(),
-                "discord": discord,
-                "generation": generation,
-                "phone": phone,
-                "instagram": instagram,
-                "grad_year": grad_year,
-                "meikyoku_roles": roles,
-                "career_path": career_path,
-                "status": status
-            })
-
-            updated.update(form_data)
-
-            # 基本情報とプロフィールを更新
-            update_user_basic(
-                target_username,
-                name.strip(),
-                penname.strip()
-            )
-
-            save_user_record(
-                target_username,
-                updated
-            )
-
-            if target_username == user["username"]:
-                st.session_state.logged_in_user.update({
+                st.error("名前とメイキョクネームは必須です。")
+            else:
+                updated = dict(record)
+                updated.update({
+                    "owner_username": username,
                     "name": name.strip(),
-                    "penname": penname.strip()
+                    "penname": penname.strip(),
+                    "discord": discord,
+                    "generation": generation,
+                    "grad_year": grad_year,
+                    "phone": phone,
+                    "instagram": instagram,
+                    "meikyoku_roles": roles,
+                    "career_path": career_path,
+                    "status": status
                 })
+                updated.update(detail_values)
 
-            st.success("情報を保存しました！")
-            st.rerun()
+                update_user(username, name.strip(), penname.strip())
+                save_record(username, updated)
 
+                st.success("保存しました！")
+                st.rerun()
+
+
+# ==========================================
+# 管理者専用機能
+# ==========================================
 
 @st.dialog("✏️ メンバー情報編集")
-def show_member_edit_dialog(target_username):
-
+def admin_edit_profile(username):
     if not is_admin:
         st.error("管理者のみ操作できます。")
         return
 
-    target_user = get_user(target_username)
+    st.write(f"対象ID：`{username}`")
+    profile_editor(username, f"admin_{username}", True)
 
-    if not target_user:
-        st.error("ユーザーが見つかりません。")
+
+@st.dialog("🔑 パスワード変更")
+def admin_change_password(username):
+    if not is_admin:
+        st.error("管理者のみ操作できます。")
         return
 
-    record = get_record_by_username(
-        target_username
-    )
+    st.write(f"対象ID：`{username}`")
 
-    render_profile_form(
-        target_username,
-        target_user,
-        record,
-        f"admin_edit_{target_username}",
-        administrator=True
-    )
+    with st.form(f"password_{username}"):
+        password = st.text_input(
+            "新しいパスワード", type="password"
+        )
+        confirm = st.text_input(
+            "確認用パスワード", type="password"
+        )
+
+        if st.form_submit_button("変更する", type="primary"):
+            if not password:
+                st.error("パスワードを入力してください。")
+            elif password != confirm:
+                st.error("パスワードが一致しません。")
+            else:
+                update_password(username, password)
+                st.success("パスワードを変更しました。")
+
+
+@st.dialog("👤 メンバー詳細")
+def show_profile(username):
+    record = get_record(username)
+
+    if not record or record.get("status") != "published":
+        st.warning("このプロフィールは未公開です。")
+        return
+
+    st.subheader(record.get("name", ""))
+    st.write(f"メイキョクネーム：{record.get('penname', '')}")
+    st.write(f"期生：{record.get('generation', '')}")
+    st.write(f"卒業年：{record.get('grad_year', '')}")
+    st.write(f"進路：{record.get('career_path', '')}")
+
+    for field, label in DETAIL_FIELDS.get(
+        record.get("career_path"), {}
+    ).items():
+        st.write(f"**{label}：** {record.get(field) or '未記入'}")
 
 
 # ==========================================
-# 11. メイン画面ヘッダー
+# ヘッダー
 # ==========================================
 
 col1, col2 = st.columns([3, 1])
 
 with col1:
     st.title("🎓 メイキョク 就活・進路データベース")
-
-    st.write(
-        f"ログイン中：**{user['name']}**"
-        f"（{user['penname']}）"
-    )
-
+    st.write(f"ログイン中：**{user['name']}**（{user['penname']}）")
     if is_admin:
-        st.caption("👑 管理者アカウント")
+        st.caption("👑 管理者")
 
 with col2:
-    if st.button(
-        "🚪 ログアウト",
-        use_container_width=True
-    ):
+    if st.button("🚪 ログアウト", use_container_width=True):
         st.session_state.logged_in_user = None
         st.rerun()
 
 
-# ==========================================
-# 12. タブ切り替え
-# ==========================================
-
-tab_names = [
+tabs = [
     "📋 登録情報一覧（トップ）",
     "📝 自分の情報登録・編集",
     "💬 質問箱"
 ]
-
 if is_admin:
-    tab_names.append("⚙️ 管理者画面")
+    tabs.append("⚙️ 管理者画面")
 
 selected_tab = st.radio(
-    "メニュー切り替え",
-    tab_names,
-    index=selected_index(
-        tab_names,
-        st.session_state.active_tab
-    ),
+    "メニュー",
+    tabs,
+    index=option_index(tabs, st.session_state.active_tab),
     horizontal=True,
     label_visibility="collapsed"
 )
-
 st.session_state.active_tab = selected_tab
 
 
 # ==========================================
-# 13. メンバーカード表示
-# ==========================================
-
-def render_member_card(item):
-
-    generation = item.get(
-        "generation", "期生不明"
-    )
-
-    name = item.get("name", "名前未登録")
-    penname = item.get("penname", "未設定")
-    grad_year = item.get("grad_year", "未設定")
-    career_path = item.get("career_path", "未設定")
-
-    title = (
-        f"👤 [{generation}] {name} / "
-        f"{penname}（{grad_year}卒 / {career_path}）"
-    )
-
-    with st.expander(title):
-
-        st.write(
-            f"**本名:** {name} | "
-            f"**メイキョクネーム:** {penname}"
-        )
-
-        roles = ", ".join(
-            item.get("meikyoku_roles", [])
-        )
-
-        st.write(
-            f"**メイキョクでの役職・業務:** "
-            f"{roles or '未登録'}"
-        )
-
-        st.write(
-            f"**Discord:** {item.get('discord', '-')} | "
-            f"**電話:** {item.get('phone', '-')} | "
-            f"**Instagram:** {item.get('instagram', '-')}"
-        )
-
-        st.markdown("---")
-
-        fields = CAREER_FIELDS.get(
-            career_path, {}
-        )
-
-        for key, label in fields.items():
-            content = item.get(key) or "未記入"
-
-            if key in (
-                "pr_text",
-                "motivation_text",
-                "gakuchika"
-            ):
-                continue
-
-            st.write(f"**{label}:** {content}")
-
-        if career_path == "就職":
-            with st.expander(
-                "📄 自己PR・志望動機・ガクチカを見る"
-            ):
-                for key in (
-                    "pr_text",
-                    "motivation_text",
-                    "gakuchika"
-                ):
-                    label = fields[key]
-                    st.write(f"**【{label}】**")
-                    st.write(item.get(key) or "未記入")
-
-
-# ==========================================
-# 14. 登録情報一覧
+# 登録情報一覧
 # ==========================================
 
 if selected_tab == "📋 登録情報一覧（トップ）":
+    st.subheader("🔍 登録情報一覧")
 
-    st.subheader(
-        "🔍 登録情報の一覧・絞り込み検索"
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        keyword = st.text_input(
-            "キーワード検索（名前・企業名など）"
-        )
-
-    with col2:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        keyword = st.text_input("キーワード検索")
+    with c2:
         filter_path = st.selectbox(
-            "進路で絞り込み",
-            ["すべて"] + CAREER_PATHS
+            "進路", ["すべて"] + PATHS
         )
-
-    with col3:
+    with c3:
         filter_year = st.selectbox(
-            "卒業年で絞り込み",
-            ["すべて"] + GRAD_YEARS
+            "卒業年", ["すべて"] + YEARS
         )
 
     records = get_published_records()
-
     filtered = []
 
     for record in records:
-
-        if (
-            filter_path != "すべて"
-            and record.get("career_path") != filter_path
-        ):
+        if filter_path != "すべて" and record.get(
+            "career_path"
+        ) != filter_path:
             continue
 
-        if (
-            filter_year != "すべて"
-            and record.get("grad_year") != filter_year
-        ):
+        if filter_year != "すべて" and record.get(
+            "grad_year"
+        ) != filter_year:
             continue
 
-        if (
-            keyword
-            and keyword.lower()
-            not in str(record).lower()
-        ):
+        if keyword and keyword.lower() not in str(record).lower():
             continue
 
         filtered.append(record)
 
     filtered.sort(
-        key=lambda item: get_gen_sort_key(
-            item.get("generation")
-        )
+        key=lambda r: generation_number(r.get("generation"))
     )
 
-    st.write(f"該当件数：**{len(filtered)}件**")
-
-    st.markdown("---")
-
     graduated = [
-        item for item in filtered
-        if is_graduated_generation(
-            item.get("generation")
-        )
+        r for r in filtered
+        if is_graduated(r.get("generation"))
+    ]
+    current = [
+        r for r in filtered
+        if not is_graduated(r.get("generation"))
     ]
 
-    current = [
-        item for item in filtered
-        if not is_graduated_generation(
-            item.get("generation")
-        )
-    ]
+    st.write(f"該当件数：**{len(filtered)}件**")
 
     tab1, tab2 = st.tabs([
         f"🎓 卒業メンバー（{len(graduated)}件）",
         f"🏫 現役メンバー（{len(current)}件）"
     ])
 
+    def render_card(record):
+        generation = record.get("generation") or "期生不明"
+        name = record.get("name") or "未登録"
+        penname = record.get("penname") or "未設定"
+        year = record.get("grad_year") or "未設定"
+        path = record.get("career_path") or "未設定"
+
+        with st.expander(
+            f"👤 [{generation}] {name} / {penname}"
+            f"（{year}卒 / {path}）"
+        ):
+            roles = ", ".join(record.get("meikyoku_roles", []))
+            st.write(f"**メイキョクでの役割：** {roles}")
+            st.write(f"**Discord：** {record.get('discord', '-')}")
+            st.write(f"**電話：** {record.get('phone', '-')}")
+            st.write(f"**Instagram：** {record.get('instagram', '-')}")
+
+            for field, label in DETAIL_FIELDS.get(path, {}).items():
+                st.write(
+                    f"**{label}：** {record.get(field) or '未記入'}"
+                )
+
     with tab1:
         if graduated:
-            for item in graduated:
-                render_member_card(item)
+            for record in graduated:
+                render_card(record)
         else:
-            st.info("該当する卒業メンバーはいません。")
+            st.info("該当メンバーはいません。")
 
     with tab2:
         if current:
-            for item in current:
-                render_member_card(item)
+            for record in current:
+                render_card(record)
         else:
-            st.info("該当する現役メンバーはいません。")
+            st.info("該当メンバーはいません。")
 
 
 # ==========================================
-# 15. 自分の情報登録・編集
+# 自分の情報編集
 # ==========================================
 
 elif selected_tab == "📝 自分の情報登録・編集":
-
-    st.subheader(
-        "📝 自身の就活・進路情報の登録・編集"
-    )
-
-    my_record = get_record_by_username(
-        user["username"]
-    )
-
-    if my_record:
-        status = my_record.get("status")
-
-        if status == "published":
-            st.info("現在のステータス：🟢 公開中")
-        else:
-            st.info("現在のステータス：🟡 下書き")
-
-    render_profile_form(
-        user["username"],
-        user,
-        my_record,
-        "my_profile_form"
-    )
+    st.subheader("📝 自分の情報登録・編集")
+    profile_editor(user["username"], "my")
 
 
 # ==========================================
-# 16. 質問箱
+# 質問箱
 # ==========================================
 
 elif selected_tab == "💬 質問箱":
-
     st.subheader("💬 質問箱（Q&Aボード）")
 
-    st.write(
-        "就活や進路についての疑問を投稿したり、"
-        "先輩や仲間からの回答を確認できます。"
-    )
-
     with st.container(border=True):
+        st.markdown("#### ✍️ 新しい質問を投稿")
 
-        st.markdown("#### ✍️ 新しい質問を投稿する")
-
-        with st.form("new_question_form"):
-
-            question_text = st.text_area(
-                "質問内容",
-                placeholder=(
-                    "例：インターンで評価される"
-                    "ポイントを教えてください！"
-                )
+        with st.form("question_form"):
+            content = st.text_area("質問内容")
+            anonymous = st.checkbox("匿名で投稿する", value=True)
+            submit = st.form_submit_button(
+                "質問を送信", type="primary"
             )
 
-            col1, col2 = st.columns([3, 1])
-
-            with col1:
-                anonymous = st.checkbox(
-                    "匿名で質問を投稿する",
-                    value=True
-                )
-
-            with col2:
-                submitted = st.form_submit_button(
-                    "質問を送信",
-                    type="primary",
-                    use_container_width=True
-                )
-
-            if submitted:
-
-                if not question_text.strip():
+            if submit:
+                if not content.strip():
                     st.error("質問を入力してください。")
-
                 else:
-                    asker = (
-                        "匿名希望"
-                        if anonymous
-                        else (
-                            f"{user['name']} "
-                            f"({user['penname']})"
-                        )
+                    name = (
+                        "匿名希望" if anonymous
+                        else f"{user['name']} ({user['penname']})"
                     )
-
-                    add_question(
-                        asker,
-                        question_text.strip()
-                    )
-
+                    add_question(name, content.strip())
                     st.rerun()
 
-    st.markdown("---")
     st.markdown("### 📬 質問＆回答一覧")
 
-    questions = get_questions_and_answers()
+    questions = get_questions()
 
     if not questions:
-        st.info(
-            "現在、投稿された質問はありません。"
-        )
+        st.info("まだ質問はありません。")
 
-    for question in questions:
-
+    for q in questions:
         with st.container(border=True):
+            st.markdown(f"### ❓ {q['content']}")
+            st.caption(f"投稿者：{q['asker_name']}")
 
-            st.markdown(
-                f"### ❓ {question['content']}"
-            )
+            if q["answers"]:
+                st.write(f"**回答：{len(q['answers'])}件**")
 
-            st.caption(
-                f"投稿者：{question['asker_name']}"
-            )
+            for answer in q["answers"]:
+                col1, col2 = st.columns([2, 8])
 
-            answers = question["answers"]
+                with col1:
+                    if answer["is_anonymous"]:
+                        st.write("👤 匿名回答")
+                    else:
+                        if st.button(
+                            f"👤 {answer['name']}",
+                            key=f"answer_{answer['id']}"
+                        ):
+                            show_profile(answer["username"])
 
-            if answers:
-                st.markdown(
-                    f"**💬 回答（{len(answers)}件）**"
-                )
+                with col2:
+                    st.info(answer["content"])
 
-                for answer in answers:
+            with st.expander("✏️ この質問に回答する"):
+                with st.form(f"answer_form_{q['id']}"):
+                    content = st.text_area("回答内容")
+                    anonymous = st.checkbox("匿名で回答する")
+                    submit = st.form_submit_button("回答を送信")
 
-                    col1, col2 = st.columns([2, 8])
-
-                    with col1:
-
-                        if answer["is_anonymous"]:
-                            st.write("👤 匿名回答")
-
-                        else:
-                            if st.button(
-                                f"👤 {answer['name']}",
-                                key=f"answer_user_{answer['id']}"
-                            ):
-                                show_user_profile(
-                                    answer["username"]
-                                )
-
-                    with col2:
-                        st.info(answer["content"])
-
-            else:
-                st.caption(
-                    "まだ回答はありません。"
-                )
-
-            with st.expander(
-                "✏️ この質問に回答する"
-            ):
-
-                with st.form(
-                    f"answer_form_{question['id']}"
-                ):
-
-                    answer_text = st.text_area(
-                        "回答を入力",
-                        placeholder=(
-                            "経験やアドバイスを"
-                            "教えてください"
-                        )
-                    )
-
-                    anonymous_answer = st.checkbox(
-                        "匿名で回答する"
-                    )
-
-                    submitted = st.form_submit_button(
-                        "回答を送信",
-                        use_container_width=True
-                    )
-
-                    if submitted:
-
-                        if not answer_text.strip():
-                            st.error(
-                                "回答を入力してください。"
-                            )
-
+                    if submit:
+                        if not content.strip():
+                            st.error("回答を入力してください。")
                         else:
                             add_answer(
-                                question["id"],
+                                q["id"],
                                 user["username"],
-                                (
-                                    f"{user['name']} "
-                                    f"({user['penname']})"
-                                ),
-                                anonymous_answer,
-                                answer_text.strip()
+                                f"{user['name']} ({user['penname']})",
+                                anonymous,
+                                content.strip()
                             )
-
                             st.rerun()
 
 
 # ==========================================
-# 17. 管理者画面
+# 管理者画面
 # ==========================================
 
 elif selected_tab == "⚙️ 管理者画面":
-
-    # 表示だけでなく、操作前にも権限を確認
     if not is_admin:
         st.error("管理者権限がありません。")
         st.stop()
 
     st.subheader("⚙️ 管理者画面")
-
     st.write(
-        "メンバー情報・パスワード・権限・"
-        "アクセス状態を管理できます。"
+        "メンバーのプロフィール、パスワード、"
+        "権限、アクセス状態を管理できます。"
     )
 
-    users = get_all_users()
-
-    st.metric(
-        "登録ユーザー数",
-        len(users)
-    )
-
-    st.markdown("---")
+    users = get_users()
+    st.metric("登録ユーザー数", len(users))
 
     search = st.text_input(
         "🔍 メンバー検索",
-        placeholder="名前・メイキョクネーム・Discord ID"
+        placeholder="名前・メイキョクネーム・ID"
     )
 
     for target in users:
+        username = target["username"]
 
-        target_username = target["username"]
+        search_text = (
+            username + target["name"] + target["penname"]
+        ).lower()
 
-        if search:
-            search_text = (
-                target["username"]
-                + target["name"]
-                + target["penname"]
-            ).lower()
+        if search and search.lower() not in search_text:
+            continue
 
-            if search.lower() not in search_text:
-                continue
-
-        is_primary = (
-            target_username == PRIMARY_ADMIN
-        )
-
-        title = (
-            f"👤 {target['name']} "
-            f"（{target['penname']}）"
-            f" / {target_username}"
-        )
-
-        if is_primary:
-            title += " 👑"
-
-        with st.expander(title):
-
-            st.write(
-                f"**Discord ID:** `{target_username}`"
-            )
-
-            st.write(
-                "**現在の権限:** "
-                + (
-                    "管理者"
-                    if target["role"] == "admin"
-                    else "一般メンバー"
-                )
-            )
-
-            st.write(
-                "**アクセス状態:** "
-                + (
-                    "🟢 許可"
-                    if target["status"] == "active"
-                    else "🔴 ブロック"
-                )
-            )
-
-            st.markdown("---")
+        with st.expander(
+            f"👤 {target['name']}（{target['penname']}）"
+            f" / {username}"
+        ):
+            st.write(f"**ID：** `{username}`")
+            st.write(f"**権限：** {target['role']}")
+            st.write(f"**状態：** {target['status']}")
 
             col1, col2 = st.columns(2)
 
             with col1:
-
                 if st.button(
                     "✏️ 情報編集",
-                    key=f"edit_{target_username}",
+                    key=f"edit_{username}",
                     use_container_width=True
                 ):
-                    show_member_edit_dialog(
-                        target_username
-                    )
+                    admin_edit_profile(username)
 
             with col2:
-
                 if st.button(
                     "🔑 パスワード変更",
-                    key=f"password_{target_username}",
+                    key=f"password_{username}",
                     use_container_width=True
                 ):
-                    show_password_change_dialog(
-                        target_username
-                    )
+                    admin_change_password(username)
 
             st.markdown("---")
 
-            if is_primary:
+            # adminは唯一の固定管理者として保護
+            if username == ADMIN_ID:
                 st.info(
-                    "👑 このアカウントは固定管理者です。"
-                    "管理者権限とアクセス許可は保護されています。"
+                    "👑 メイン管理者です。"
+                    "プロフィールとパスワードは編集できます。"
                 )
-
             else:
                 col1, col2 = st.columns(2)
 
                 with col1:
-                    new_role = st.selectbox(
-                        "ユーザー権限",
+                    role = st.selectbox(
+                        "権限",
                         ["admin", "member"],
-                        index=selected_index(
-                            ["admin", "member"],
-                            target["role"]
+                        index=option_index(
+                            ["admin", "member"], target["role"]
                         ),
-                        format_func=lambda role: (
-                            "👑 管理者"
-                            if role == "admin"
-                            else "👤 一般メンバー"
-                        ),
-                        key=f"role_{target_username}"
+                        key=f"role_{username}"
                     )
 
                     if st.button(
                         "権限を保存",
-                        key=f"save_role_{target_username}"
+                        key=f"save_role_{username}"
                     ):
-                        update_user_role(
-                            target_username,
-                            new_role
+                        update_user(
+                            username,
+                            target["name"],
+                            target["penname"],
+                            role=role
                         )
-                        st.success("権限を変更しました。")
                         st.rerun()
 
                 with col2:
-                    if target["status"] == "active":
+                    status = st.selectbox(
+                        "アクセス状態",
+                        ["active", "banned"],
+                        index=option_index(
+                            ["active", "banned"], target["status"]
+                        ),
+                        key=f"status_{username}"
+                    )
 
-                        if st.button(
-                            "🚫 ブロックする",
-                            key=f"ban_{target_username}",
-                            use_container_width=True
-                        ):
-                            update_user_status(
-                                target_username,
-                                "banned"
-                            )
-                            st.rerun()
-
-                    else:
-
-                        if st.button(
-                            "⭕ ブロック解除",
-                            key=f"unban_{target_username}",
-                            use_container_width=True
-                        ):
-                            update_user_status(
-                                target_username,
-                                "active"
-                            )
-                            st.rerun()
+                    if st.button(
+                        "アクセス状態を保存",
+                        key=f"save_status_{username}"
+                    ):
+                        update_user(
+                            username,
+                            target["name"],
+                            target["penname"],
+                            status=status
+                        )
+                        st.rerun()
