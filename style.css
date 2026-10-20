@@ -1,0 +1,43 @@
+/* メニュー切り替えラジオボタンエリア全体の配置 */
+div[data-testid="stRadio"] > div {
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  margin-bottom: 25px;
+}
+
+/* ラジオボタン各項目を大きなボタン風にする */
+div[data-testid="stRadio"] label {
+  flex: 1;
+  background-color: #f0f2f6;
+  padding: 14px 20px !important;
+  border-radius: 12px !important;
+  text-align: center;
+  font-size: 18px !important;
+  font-weight: bold !important;
+  color: #31333f !important;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  border: 2px solid #e0e0e0;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+}
+
+/* ラジオマーク（小丸）を非表示 */
+div[data-testid="stRadio"] label > div:first-child {
+  display: none !important;
+}
+
+/* マウスを載せた時（ホバー） */
+div[data-testid="stRadio"] label:hover {
+  background-color: #e2e8f0;
+  border-color: #cbd5e1;
+  transform: translateY(-2px);
+}
+
+/* 選択中のボタンの見た目 */
+div[data-testid="stRadio"] label[data-checked="true"] {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+  color: #ffffff !important;
+  border-color: #1e40af !important;
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.3);
+}
