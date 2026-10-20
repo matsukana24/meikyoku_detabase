@@ -66,6 +66,12 @@ def init_db():
             )
         """)
 
+    # 既存のテーブルに generation 列がない場合を考慮して安全に追加（マイグレーション）
+    try:
+      c.execute("ALTER TABLE records ADD COLUMN generation TEXT")
+    except sqlite3.OperationalError:
+      pass
+
     # 3. 質問テーブル
     c.execute("""
             CREATE TABLE IF NOT EXISTS questions (
@@ -88,27 +94,22 @@ def init_db():
             )
         """)
 
-    # 初期テストユーザーの登録
+    # 初期ユーザーとして「松田夏奈 (lil_3316)」のみを登録（存在しない場合）
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
-      c.executemany(
+      c.execute(
           """
                 INSERT INTO users (username, password, name, penname, role, status)
                 VALUES (?, ?, ?, ?, ?, ?)
             """,
-          [
-              (
-                  "lil_3316",
-                  "08044713515",
-                  "松田夏奈",
-                  "まつかな",
-                  "admin",
-                  "active",
-              ),
-              ("yamada", "pass123", "山田 太郎", "ヤマタツ", "member", "active"),
-              ("sato", "pass123", "佐藤 花子", "ハナちゃん", "admin", "active"),
-              ("suzuki", "pass123", "鈴木 健太", "ケンケン", "member", "banned"),
-          ],
+          (
+              "lil_3316",
+              "08044713515",
+              "松田夏奈",
+              "まつかな",
+              "admin",
+              "active",
+          ),
       )
 
     conn.commit()
@@ -395,9 +396,8 @@ if st.session_state.logged_in_user is None:
             st.rerun()
 
     st.info(
-        "💡 **動作確認用アカウント:**\n"
-        "- 松田夏奈 ID: `lil_3316` / パスワード: `08044713515` (管理者)\n"
-        "- 一般メンバー ID: `yamada` / パスワード: `pass123`"
+        "💡 **管理者アカウント:**\n"
+        "- 松田夏奈 ID: `lil_3316` / パスワード: `08044713515`"
     )
   st.stop()
 
