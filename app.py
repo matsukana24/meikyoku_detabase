@@ -66,7 +66,6 @@ def init_db():
             )
         """)
 
-    # 既存のテーブルに generation 列がない場合を考慮して安全に追加（マイグレーション）
     try:
       c.execute("ALTER TABLE records ADD COLUMN generation TEXT")
     except sqlite3.OperationalError:
@@ -94,7 +93,7 @@ def init_db():
             )
         """)
 
-    # 初期ユーザーとして「松田夏奈 (lil_3316)」のみを登録（存在しない場合）
+    # 初期管理者「松田夏奈 (lil_3316)」の登録（存在しない場合）
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
       c.execute(
@@ -279,7 +278,6 @@ def get_questions_and_answers():
     return result
 
 
-# 期生を数値化してソートするためのヘルパー関数
 def get_gen_sort_key(gen_str):
   if not gen_str:
     return 999
@@ -291,7 +289,6 @@ def get_gen_sort_key(gen_str):
   return 999
 
 
-# 期生が卒業メンバーか現役メンバーかを判定する関数 (5期生までが卒業)
 def is_graduated_generation(gen_str):
   if not gen_str:
     return False
@@ -351,23 +348,69 @@ if st.session_state.logged_in_user is None:
 
     with auth_tab2:
       with st.form("signup_form"):
-        st.subheader("新規アカウント作成")
+        st.subheader("新規アカウント作成 ＆ 必須情報登録")
+        st.caption(
+            "登録完了と同時にアカウントが作成され、初期データが保存されます。"
+        )
+
         new_username = st.text_input(
             "Discord ID *", placeholder="例: taro123"
-        )
-        new_name = st.text_input(
-            "名前（本名）*", placeholder="例: 山田 太郎"
-        )
-        new_penname = st.text_input(
-            "メイキョクネーム *", placeholder="例: ヤマタツ"
         )
         new_pass = st.text_input("パスワード *", type="password")
         new_pass_confirm = st.text_input(
             "パスワード（確認用）*", type="password"
         )
 
+        st.markdown("---")
+        st.markdown("**【プロフィール必須項目】**")
+        new_name = st.text_input(
+            "名前（本名）*", placeholder="例: 山田 太郎"
+        )
+        new_penname = st.text_input(
+            "メイキョクネーム *", placeholder="例: ヤマタツ"
+        )
+
+        generation_options = [
+            "1〜2期生",
+            "3期生",
+            "4期生",
+            "5期生",
+            "6期生",
+            "7期生",
+            "8期生",
+            "9期生",
+            "10期生+",
+        ]
+        new_generation = st.selectbox(
+            "何期生か *", generation_options, index=3
+        )
+
+        grad_years_list = [f"{y}年" for y in range(2020, 2033)] + [
+            "その他 / 既卒"
+        ]
+        new_grad_year = st.selectbox(
+            "卒業年度 *", grad_years_list, index=5
+        )
+
+        role_options = [
+            "代表",
+            "副代表",
+            "営業",
+            "イベント企画",
+            "SNS",
+            "開発",
+            "記事",
+        ]
+        new_roles = st.multiselect(
+            "メイキョクでの役割・業務 *", options=role_options
+        )
+
+        new_career_path = st.radio(
+            "卒業後の進路 *", ["就職", "進学", "起業"]
+        )
+
         submit_signup = st.form_submit_button(
-            "登録してログインする", use_container_width=True
+            "登録してログインする", type="primary", use_container_width=True
         )
 
         if submit_signup:
@@ -376,14 +419,32 @@ if st.session_state.logged_in_user is None:
               or not new_name
               or not new_penname
               or not new_pass
+              or not new_roles
           ):
-            st.error("すべての必須項目を入力してください。")
+            st.error("すべての必須項目（*）を入力・選択してください。")
           elif get_user(new_username):
             st.error("このDiscord IDはすでに使われています。")
           elif new_pass != new_pass_confirm:
             st.error("確認用パスワードが一致しません。")
           else:
+            # 1. ユーザー作成
             add_user(new_username, new_pass, new_name, new_penname)
+            # 2. 初期レコード（下書きまたは公開）の作成
+            initial_record = {
+                "owner_username": new_username,
+                "name": new_name,
+                "penname": new_penname,
+                "discord": new_username,
+                "generation": new_generation,
+                "phone": "",
+                "instagram": "",
+                "grad_year": new_grad_year,
+                "meikyoku_roles": new_roles,
+                "career_path": new_career_path,
+                "status": "draft",  # 初回は下書き保存状態、編集から公開可能
+            }
+            save_user_record(new_username, initial_record)
+
             st.session_state.logged_in_user = {
                 "username": new_username,
                 "name": new_name,
@@ -391,14 +452,10 @@ if st.session_state.logged_in_user is None:
                 "role": "member",
             }
             st.success(
-                "アカウントを作成しました！続いて自分の情報を登録してください。"
+                "アカウント作成＆初期登録が完了しました！マイページから詳細情報を追記・公開できます。"
             )
             st.rerun()
 
-    st.info(
-        "💡 **管理者アカウント:**\n"
-        "- 松田夏奈 ID: `lil_3316` / パスワード: `08044713515`"
-    )
   st.stop()
 
 # ==========================================
@@ -745,7 +802,7 @@ elif selected_tab == "📝 自分の情報登録・編集":
       "記事",
   ]
   meikyoku_roles = st.multiselect(
-      "メイキョクでの業務内容",
+      "メイキョクでの業務内容 *",
       options=role_options,
       default=get_val("meikyoku_roles", []),
   )
@@ -813,7 +870,7 @@ elif selected_tab == "📝 自分の情報登録・編集":
         "進学先選びで留意したこと", value=get_val("grad_choice_reason")
     )
     form_data["grad_advice"] = st.text_area(
-        "進学のためのアドバイス", value=get_val("grad_advice")
+        "進学のアドバイス", value=get_val("grad_advice")
     )
 
   elif career_path == "起業":
