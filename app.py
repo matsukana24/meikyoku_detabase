@@ -282,7 +282,6 @@ def get_questions_and_answers():
 def get_gen_sort_key(gen_str):
   if not gen_str:
     return 999
-  # "1〜2期生" や "3期生" から数字を抽出
   import re
 
   nums = re.findall(r"\d+", gen_str)
@@ -295,11 +294,9 @@ def get_gen_sort_key(gen_str):
 def is_graduated_generation(gen_str):
   if not gen_str:
     return False
-  # 「1〜2期」「3期」「4期」「5期」が含まれる場合は卒業生
   for g in ["1〜2期", "1-2期", "3期", "4期", "5期"]:
     if g in gen_str:
       return True
-  # 数値が5以下なら卒業生とみなす
   import re
 
   nums = re.findall(r"\d+", gen_str)
@@ -538,10 +535,10 @@ def render_member_card(item):
       if item.get("meikyoku_roles")
       else "未登録"
   )
+  gen_title = item.get("generation", "期生不明")
   with st.expander(
-      f"👤 [{item.get('generation', '期生不明')]) {item['name']} /"
-      f" {item.get('penname', '未設定')}（{item['grad_year']}卒 /"
-      f" {item['career_path']}）"
+      f"👤 [{gen_title}] {item['name']} / {item.get('penname', '未設定')}（{item['grad_year']}卒"
+      f" / {item['career_path']}）"
   ):
     st.markdown(
         f"**本名:** {item['name']} | **メイキョクネーム:**"
@@ -872,7 +869,7 @@ elif selected_tab == "💬 質問箱":
       "就活や進路についての疑問を投稿したり、先輩や仲間からの回答を確認できます。"
   )
 
-  # 新規質問投稿エリア（すっきりとしたカード風デザイン）
+  # 新規質問投稿エリア
   with st.container(border=True):
     st.markdown("#### ✍️ 新しい質問を投稿する")
     with st.form("new_question_form"):
@@ -932,7 +929,7 @@ elif selected_tab == "💬 質問箱":
       else:
         st.caption("💬 まだ回答はありません。最初の回答をしてみませんか？")
 
-      # 回答投稿用フォーム（アコーディオンでスッキリ収納）
+      # 回答投稿用フォーム
       with st.expander("✏️ この質問に回答する"):
         with st.form(f"answer_form_{q['id']}"):
           ans_input = st.text_area(
