@@ -356,13 +356,7 @@ if st.session_state.logged_in_user is None:
             st.success("アカウントを作成しました！")
             st.rerun()
 
-    st.info(
-        "💡 **動作確認用アカウント:**\n"
-        "- 松田夏奈 ID: `lil_3316` / パスワード: `08044713515` (管理者)\n"
-        "- 一般メンバー ID: `yamada` / パスワード: `pass123`\n"
-        "- 管理者 ID: `sato` / パスワード: `pass123`"
-    )
-  st.stop()
+    st.stop()
 
 # ==========================================
 # 2. ログイン後のメイン画面
