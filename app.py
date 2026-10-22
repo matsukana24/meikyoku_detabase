@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-DB_FILE = "database.db"
+DB_FILE = "/var/data/database.db"
 ADMIN_ID = "admin"
 ADMIN_INITIAL_PASSWORD = "admin1020"
 
