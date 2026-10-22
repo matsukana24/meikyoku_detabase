@@ -1,5 +1,6 @@
 
 import json
+import os
 import re
 import sqlite3
 import hashlib
@@ -14,7 +15,7 @@ st.set_page_config(
 
 DB_FILE = "/var/data/database.db"
 ADMIN_ID = "admin"
-ADMIN_INITIAL_PASSWORD = "admin1020"
+ADMIN_INITIAL_PASSWORD = os.environ.get("ADMIN_INITIAL_PASSWORD", "")
 
 GENERATIONS = [
     "1〜2期生", "3期生", "4期生", "5期生",
@@ -161,7 +162,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS questions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 asker_name TEXT,
-                content TEXT
+                content TEXT,
+                asker_username TEXT
             )
         """)
 
@@ -186,10 +188,15 @@ def init_db():
                 "ALTER TABLE records ADD COLUMN generation TEXT"
             )
 
-        # 旧管理者とテストユーザーを一度だけ削除
-        # 山田はIDがyamadaの場合のみ削除する
-        for username in ("lil_3316", "aaaa", "yamada"):
-            delete_account(conn, username)
+        # 既存の質問にも投稿者IDを追加。過去の匿名質問は本人を特定できない。
+        question_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(questions)")
+        }
+        if "asker_username" not in question_columns:
+            conn.execute("ALTER TABLE questions ADD COLUMN asker_username TEXT")
+
+        # 管理者アカウントは維持し、不要な公開プロフィールだけ削除。
+        conn.execute("DELETE FROM records WHERE owner_username = ?", (ADMIN_ID,))
 
         # adminがまだ存在しない場合に新規作成
         existing = conn.execute(
@@ -198,6 +205,9 @@ def init_db():
         ).fetchone()
 
         if existing is None:
+            if not ADMIN_INITIAL_PASSWORD:
+                st.error("管理者の初期設定が必要です。RenderのEnvironmentに ADMIN_INITIAL_PASSWORD を設定してください。")
+                st.stop()
             conn.execute("""
                 INSERT INTO users
                 (username, password, name, penname, role, status)
@@ -349,12 +359,30 @@ def get_questions():
         return questions
 
 
-def add_question(name, content):
+def add_question(username, name, content):
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO questions (asker_name, content) VALUES (?, ?)",
-            (name, content)
+            "INSERT INTO questions (asker_username, asker_name, content) VALUES (?, ?, ?)",
+            (username, name, content)
         )
+
+
+def delete_question(question_id, actor_username, actor_is_admin):
+    """質問者本人か管理者だけが削除できる。回答も同時に削除。"""
+    with get_connection() as conn:
+        question = conn.execute(
+            "SELECT asker_username FROM questions WHERE id = ?", (question_id,)
+        ).fetchone()
+        if not question or not (
+            actor_is_admin or (
+                question["asker_username"] is not None
+                and question["asker_username"] == actor_username
+            )
+        ):
+            return False
+        conn.execute("DELETE FROM answers WHERE question_id = ?", (question_id,))
+        conn.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+        return True
 
 
 def add_answer(question_id, username, name, anonymous, content):
@@ -493,6 +521,7 @@ if st.session_state.logged_in_user is None:
                             "career_path": new_path,
                             "phone": "",
                             "instagram": "",
+                            "optional_contact": "",
                             "status": "draft"
                         })
                         st.session_state.logged_in_user = new_id
@@ -559,6 +588,11 @@ def profile_editor(username, key_prefix, administrator=False):
         instagram = st.text_input(
             "Instagram ID", value=val("instagram")
         )
+        optional_contact = st.text_input(
+            "その他の連絡先（任意：LINE IDなど）",
+            value=val("optional_contact"),
+            help="ほかのメンバーに公開されるプロフィール情報です。公開してよい連絡先だけ入力してください。"
+        )
 
         old_roles = val("meikyoku_roles", [])
         if not isinstance(old_roles, list):
@@ -621,6 +655,7 @@ def profile_editor(username, key_prefix, administrator=False):
                     "grad_year": grad_year,
                     "phone": phone,
                     "instagram": instagram,
+                    "optional_contact": optional_contact.strip(),
                     "meikyoku_roles": roles,
                     "career_path": career_path,
                     "status": status
@@ -687,6 +722,8 @@ def show_profile(username):
     st.write(f"期生：{record.get('generation', '')}")
     st.write(f"卒業年：{record.get('grad_year', '')}")
     st.write(f"進路：{record.get('career_path', '')}")
+    if record.get("optional_contact"):
+        st.write(f"その他の連絡先：{record['optional_contact']}")
 
     for field, label in DETAIL_FIELDS.get(
         record.get("career_path"), {}
@@ -698,16 +735,15 @@ def show_profile(username):
 # ヘッダー
 # ==========================================
 
-col1, col2 = st.columns([3, 1])
+st.title("🎓 メイキョク 就活・進路データベース")
+st.write(f"ログイン中：**{user['name']}**（{user['penname']}）")
+if is_admin:
+    st.caption("👑 管理者")
 
-with col1:
-    st.title("🎓 メイキョク 就活・進路データベース")
-    st.write(f"ログイン中：**{user['name']}**（{user['penname']}）")
-    if is_admin:
-        st.caption("👑 管理者")
-
-with col2:
-    if st.button("🚪 ログアウト", use_container_width=True):
+# 誤タップ防止：ログアウトはサイドバー内に移し、確認操作を必須にする。
+with st.sidebar.expander("⚙️ アカウント操作（ログアウト）", expanded=False):
+    logout_confirm = st.checkbox("ログアウトすることを確認", key="logout_confirm")
+    if st.button("🚪 ログアウト", disabled=not logout_confirm, use_container_width=True):
         st.session_state.logged_in_user = None
         st.rerun()
 
@@ -749,7 +785,10 @@ if selected_tab == "📋 登録情報一覧（トップ）":
             "卒業年", ["すべて"] + YEARS
         )
 
-    records = get_published_records()
+    records = [
+        record for record in get_published_records()
+        if record.get("owner_username") != ADMIN_ID
+    ]
     filtered = []
 
     for record in records:
@@ -804,6 +843,7 @@ if selected_tab == "📋 登録情報一覧（トップ）":
             st.write(f"**Discord：** {record.get('discord', '-')}")
             st.write(f"**電話：** {record.get('phone', '-')}")
             st.write(f"**Instagram：** {record.get('instagram', '-')}")
+            st.write(f"**その他の連絡先：** {record.get('optional_contact') or '-'}")
 
             for field, label in DETAIL_FIELDS.get(path, {}).items():
                 st.write(
@@ -859,7 +899,7 @@ elif selected_tab == "💬 質問箱":
                         "匿名希望" if anonymous
                         else f"{user['name']} ({user['penname']})"
                     )
-                    add_question(name, content.strip())
+                    add_question(user["username"], name, content.strip())
                     st.rerun()
 
     st.markdown("### 📬 質問＆回答一覧")
@@ -874,24 +914,31 @@ elif selected_tab == "💬 質問箱":
             st.markdown(f"### ❓ {q['content']}")
             st.caption(f"投稿者：{q['asker_name']}")
 
+            # 投稿者本人・管理者にのみ取り消しボタンを表示。
+            can_delete = is_admin or q.get("asker_username") == user["username"]
+            if can_delete:
+                with st.expander("🗑️ この質問を取り消す"):
+                    st.warning("質問とすべての回答が削除されます。元には戻せません。")
+                    confirmed = st.checkbox(
+                        "削除することを確認しました", key=f"confirm_delete_{q['id']}"
+                    )
+                    if st.button(
+                        "質問を削除する", key=f"delete_question_{q['id']}",
+                        disabled=not confirmed
+                    ):
+                        if delete_question(q["id"], user["username"], is_admin):
+                            st.rerun()
+                        else:
+                            st.error("削除権限がありません。")
+
             if q["answers"]:
                 st.write(f"**回答：{len(q['answers'])}件**")
 
             for answer in q["answers"]:
-                col1, col2 = st.columns([2, 8])
-
-                with col1:
-                    if answer["is_anonymous"]:
-                        st.write("👤 匿名回答")
-                    else:
-                        if st.button(
-                            f"👤 {answer['name']}",
-                            key=f"answer_{answer['id']}"
-                        ):
-                            show_profile(answer["username"])
-
-                with col2:
-                    st.info(answer["content"])
+                # 回答者名はリンクボタンにせず、普通の文字として表示。
+                answer_name = "匿名回答" if answer["is_anonymous"] else answer["name"]
+                st.caption(f"👤 {answer_name}")
+                st.info(answer["content"])
 
             with st.expander("✏️ この質問に回答する"):
                 with st.form(f"answer_form_{q['id']}"):
@@ -931,6 +978,17 @@ elif selected_tab == "⚙️ 管理者画面":
     users = get_users()
     st.metric("登録ユーザー数", len(users))
 
+    with st.expander("🗑️ 質問の管理・削除"):
+        st.caption("管理者は投稿者を問わず質問を削除できます。回答も同時に削除されます。")
+        for question in get_questions():
+            st.write(f"**質問ID {question['id']}：** {question['content']}")
+            st.caption(f"投稿者：{question['asker_name']}")
+            if st.checkbox("削除を確認", key=f"admin_confirm_q_{question['id']}"):
+                if st.button("この質問を削除", key=f"admin_delete_q_{question['id']}"):
+                    if delete_question(question["id"], user["username"], is_admin):
+                        st.rerun()
+            st.divider()
+
     search = st.text_input(
         "🔍 メンバー検索",
         placeholder="名前・メイキョクネーム・ID"
@@ -957,7 +1015,9 @@ elif selected_tab == "⚙️ 管理者画面":
             col1, col2 = st.columns(2)
 
             with col1:
-                if st.button(
+                if username == ADMIN_ID:
+                    st.caption("管理者プロフィールは非表示です")
+                elif st.button(
                     "✏️ 情報編集",
                     key=f"edit_{username}",
                     use_container_width=True
