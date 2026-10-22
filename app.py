@@ -1,5 +1,7 @@
 
 import json
+import csv
+import io
 import os
 import re
 import sqlite3
@@ -24,6 +26,26 @@ GENERATIONS = [
 YEARS = [f"{y}年" for y in range(2020, 2033)] + ["その他 / 既卒"]
 ROLES = ["代表", "副代表", "営業", "イベント企画", "SNS", "開発", "記事"]
 PATHS = ["就職", "進学", "起業"]
+INDUSTRIES = [
+    "金融(銀行・証券)",
+    "広告・出版・マスコミ(広告)",
+    "金融(生保・損保)",
+    "メーカー(繊維・化学・薬品・化粧品)",
+    "メーカー(電子・電気機器)",
+    "メーカー(精密・医療機器)",
+    "商社",
+    "サービス・インフラ(不動産)",
+    "サービス・インフラ(人材サービス)",
+    "サービス・インフラ(コンサルティング・調査)",
+    "ソフトウエア(通信)",
+    "メーカー(印刷・事務機器関連)",
+    "メーカー(その他メーカー)",
+    "サービス・インフラ(アミューズメント・レジャー)",
+    "ソフトウエア(インターネット)",
+    "ソフトウエア(ソフトウエア)",
+    "金融(信販・リース)",
+    "サービス・インフラ(その他サービス)",
+]
 
 DETAIL_FIELDS = {
     "就職": {
@@ -114,18 +136,25 @@ def get_connection():
 
 
 def delete_account(conn, username):
+    """アカウントとプロフィールを削除。質問・回答は投稿者を匿名化して保存する。"""
     conn.execute(
-        "DELETE FROM answers WHERE username = ?",
-        (username,)
+        "UPDATE questions SET asker_username = NULL, asker_name = ? WHERE asker_username = ?",
+        ("unknownユーザー", username),
     )
     conn.execute(
-        "DELETE FROM records WHERE owner_username = ?",
-        (username,)
+        "UPDATE answers SET username = NULL, name = ?, is_anonymous = 0 WHERE username = ?",
+        ("unknownユーザー", username),
     )
-    conn.execute(
-        "DELETE FROM users WHERE username = ?",
-        (username,)
-    )
+    conn.execute("DELETE FROM records WHERE owner_username = ?", (username,))
+    conn.execute("DELETE FROM users WHERE username = ?", (username,))
+
+
+def admin_delete_account(username):
+    if username == ADMIN_ID:
+        return False
+    with get_connection() as conn:
+        delete_account(conn, username)
+    return True
 
 
 def init_db():
@@ -402,6 +431,41 @@ def option_index(options, value, default=0):
     return options.index(value) if value in options else default
 
 
+def record_to_csv(record):
+    """公開プロフィール1人分をExcel向けUTF-8 BOM付きCSVに変換。"""
+    fields = [
+        ("name", "名前（本名）"),
+        ("penname", "メイキョクネーム"),
+        ("discord", "Discord ID"),
+        ("generation", "期生"),
+        ("grad_year", "卒業年度"),
+        ("meikyoku_roles", "メイキョクでの業務内容"),
+        ("career_path", "卒業後の進路"),
+        ("industry", "就職先の業界"),
+        ("phone", "電話番号"),
+        ("instagram", "Instagram ID"),
+        ("optional_contact", "その他の連絡先"),
+    ]
+    for path in PATHS:
+        fields.extend(DETAIL_FIELDS[path].items())
+
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow([label for _, label in fields])
+    values = []
+    for key, _ in fields:
+        value = record.get(key, "")
+        if isinstance(value, list):
+            value = "、".join(map(str, value))
+        value = "" if value is None else str(value)
+        # Excel等で先頭の記号を数式として解釈されるのを防止。
+        if value.lstrip().startswith(("=", "+", "-", "@")):
+            value = "'" + value
+        values.append(value)
+    writer.writerow(values)
+    return ("\ufeff" + output.getvalue()).encode("utf-8")
+
+
 def generation_number(generation):
     numbers = re.findall(r"\d+", generation or "")
     return int(numbers[0]) if numbers else 999
@@ -429,103 +493,35 @@ if st.session_state.logged_in_user is None:
     _, center, _ = st.columns([1, 2, 1])
 
     with center:
-        login_tab, signup_tab = st.tabs([
-            "🔑 ログイン", "✨ 新規ユーザー登録"
-        ])
+        st.subheader("🔑 ログイン")
+        with st.form("login"):
+            username = st.text_input("Discord ID")
+            password = st.text_input("パスワード", type="password")
+            submit = st.form_submit_button(
+                "ログインする", type="primary",
+                use_container_width=True
+            )
 
-        with login_tab:
-            with st.form("login"):
-                username = st.text_input("Discord ID")
-                password = st.text_input("パスワード", type="password")
-                submit = st.form_submit_button(
-                    "ログインする", type="primary",
-                    use_container_width=True
-                )
+            if submit:
+                account = get_user(username.strip())
 
-                if submit:
-                    account = get_user(username.strip())
-
-                    if account and verify_password(
-                        password, account["password"]
-                    ):
-                        if account["status"] != "active":
-                            st.error("このアカウントは利用停止中です。")
-                        else:
-                            # 旧形式のパスワードをハッシュ化
-                            if not account["password"].startswith(
-                                "pbkdf2_sha256$"
-                            ):
-                                update_password(account["username"], password)
-
-                            st.session_state.logged_in_user = account["username"]
-                            st.rerun()
+                if account and verify_password(
+                    password, account["password"]
+                ):
+                    if account["status"] != "active":
+                        st.error("このアカウントは利用停止中です。")
                     else:
-                        st.error("IDまたはパスワードが違います。")
+                        # 旧形式のパスワードをハッシュ化
+                        if not account["password"].startswith(
+                            "pbkdf2_sha256$"
+                        ):
+                            update_password(account["username"], password)
 
-        with signup_tab:
-            with st.form("signup"):
-                new_id = st.text_input("Discord ID *")
-                new_password = st.text_input(
-                    "パスワード *", type="password"
-                )
-                new_confirm = st.text_input(
-                    "確認用パスワード *", type="password"
-                )
-                new_name = st.text_input("名前（本名）*")
-                new_penname = st.text_input("メイキョクネーム *")
-                new_generation = st.selectbox(
-                    "何期生か *", GENERATIONS, index=3
-                )
-                new_year = st.selectbox(
-                    "卒業年度 *", YEARS, index=5
-                )
-                new_roles = st.multiselect(
-                    "メイキョクでの役割 *", ROLES
-                )
-                new_path = st.radio("卒業後の進路 *", PATHS)
-
-                submit = st.form_submit_button(
-                    "登録してログインする",
-                    type="primary",
-                    use_container_width=True
-                )
-
-                if submit:
-                    new_id = new_id.strip()
-                    new_name = new_name.strip()
-                    new_penname = new_penname.strip()
-
-                    if not all([
-                        new_id, new_password, new_name,
-                        new_penname, new_roles
-                    ]):
-                        st.error("必須項目を入力してください。")
-                    elif new_id in ("admin", "lil_3316", "aaaa", "yamada"):
-                        st.error("このIDは使用できません。")
-                    elif get_user(new_id):
-                        st.error("このIDはすでに登録されています。")
-                    elif new_password != new_confirm:
-                        st.error("確認用パスワードが一致しません。")
-                    else:
-                        create_user(
-                            new_id, new_password, new_name, new_penname
-                        )
-                        save_record(new_id, {
-                            "owner_username": new_id,
-                            "name": new_name,
-                            "penname": new_penname,
-                            "discord": new_id,
-                            "generation": new_generation,
-                            "grad_year": new_year,
-                            "meikyoku_roles": new_roles,
-                            "career_path": new_path,
-                            "phone": "",
-                            "instagram": "",
-                            "optional_contact": "",
-                            "status": "draft"
-                        })
-                        st.session_state.logged_in_user = new_id
+                        st.session_state.logged_in_user = account["username"]
                         st.rerun()
+                else:
+                    st.error("IDまたはパスワードが違います。")
+
 
     st.stop()
 
@@ -612,6 +608,15 @@ def profile_editor(username, key_prefix, administrator=False):
             index=option_index(PATHS, val("career_path"))
         )
 
+        industry = None
+        if career_path == "就職":
+            industry = st.selectbox(
+                "就職先の業界（任意）",
+                INDUSTRIES,
+                index=option_index(INDUSTRIES, val("industry"), None),
+                placeholder="業界を選択してください"
+            )
+
         detail_values = {}
         for field, label in DETAIL_FIELDS[career_path].items():
             detail_values[field] = st.text_area(
@@ -658,6 +663,7 @@ def profile_editor(username, key_prefix, administrator=False):
                     "optional_contact": optional_contact.strip(),
                     "meikyoku_roles": roles,
                     "career_path": career_path,
+                    "industry": industry if career_path == "就職" else "",
                     "status": status
                 })
                 updated.update(detail_values)
@@ -722,6 +728,8 @@ def show_profile(username):
     st.write(f"期生：{record.get('generation', '')}")
     st.write(f"卒業年：{record.get('grad_year', '')}")
     st.write(f"進路：{record.get('career_path', '')}")
+    if record.get("career_path") == "就職":
+        st.write(f"就職先の業界：{record.get('industry') or '未登録'}")
     if record.get("optional_contact"):
         st.write(f"その他の連絡先：{record['optional_contact']}")
 
@@ -753,6 +761,8 @@ tabs = [
     "📝 自分の情報登録・編集",
     "💬 質問箱"
 ]
+if not is_admin:
+    tabs.append("🔑 パスワード変更")
 if is_admin:
     tabs.append("⚙️ 管理者画面")
 
@@ -773,7 +783,7 @@ st.session_state.active_tab = selected_tab
 if selected_tab == "📋 登録情報一覧（トップ）":
     st.subheader("🔍 登録情報一覧")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         keyword = st.text_input("キーワード検索")
     with c2:
@@ -783,6 +793,11 @@ if selected_tab == "📋 登録情報一覧（トップ）":
     with c3:
         filter_year = st.selectbox(
             "卒業年", ["すべて"] + YEARS
+        )
+
+    with c4:
+        filter_industry = st.selectbox(
+            "就職先の業界", ["すべて"] + INDUSTRIES
         )
 
     records = [
@@ -800,6 +815,9 @@ if selected_tab == "📋 登録情報一覧（トップ）":
         if filter_year != "すべて" and record.get(
             "grad_year"
         ) != filter_year:
+            continue
+
+        if filter_industry != "すべて" and record.get("industry") != filter_industry:
             continue
 
         if keyword and keyword.lower() not in str(record).lower():
@@ -844,11 +862,21 @@ if selected_tab == "📋 登録情報一覧（トップ）":
             st.write(f"**電話：** {record.get('phone', '-')}")
             st.write(f"**Instagram：** {record.get('instagram', '-')}")
             st.write(f"**その他の連絡先：** {record.get('optional_contact') or '-'}")
+            if path == "就職":
+                st.write(f"**就職先の業界：** {record.get('industry') or '未登録'}")
 
             for field, label in DETAIL_FIELDS.get(path, {}).items():
                 st.write(
                     f"**{label}：** {record.get(field) or '未記入'}"
                 )
+
+            st.download_button(
+                "📥 このメンバーの情報をCSV出力",
+                data=record_to_csv(record),
+                file_name=f"meikyoku_member_{record.get('owner_username', 'profile')}.csv",
+                mime="text/csv",
+                key=f"download_{record.get('owner_username')}",
+            )
 
     with tab1:
         if graduated:
@@ -961,6 +989,30 @@ elif selected_tab == "💬 質問箱":
 
 
 # ==========================================
+# メンバー本人によるパスワード変更
+# ==========================================
+
+elif selected_tab == "🔑 パスワード変更" and not is_admin:
+    st.subheader("🔑 パスワード変更")
+    with st.form("member_password_change"):
+        current_password = st.text_input("現在のパスワード", type="password")
+        new_password = st.text_input("新しいパスワード", type="password")
+        confirm_password = st.text_input("新しいパスワード（確認）", type="password")
+        if st.form_submit_button("パスワードを変更する", type="primary"):
+            latest = get_user(user["username"])
+            if not latest or not verify_password(current_password, latest["password"]):
+                st.error("現在のパスワードが違います。")
+            elif len(new_password) < 8:
+                st.error("新しいパスワードは8文字以上にしてください。")
+            elif new_password != confirm_password:
+                st.error("新しいパスワードが一致しません。")
+            elif new_password == current_password:
+                st.error("現在とは異なるパスワードを指定してください。")
+            else:
+                update_password(user["username"], new_password)
+                st.success("パスワードを変更しました。")
+
+# ==========================================
 # 管理者画面
 # ==========================================
 
@@ -974,6 +1026,41 @@ elif selected_tab == "⚙️ 管理者画面":
         "メンバーのプロフィール、パスワード、"
         "権限、アクセス状態を管理できます。"
     )
+
+    with st.expander("➕ 新規ユーザー登録"):
+        with st.form("admin_signup", clear_on_submit=True):
+            new_id = st.text_input("Discord ID *")
+            new_password = st.text_input("初期パスワード *", type="password")
+            new_confirm = st.text_input("初期パスワード（確認）*", type="password")
+            new_name = st.text_input("名前（本名）*")
+            new_penname = st.text_input("メイキョクネーム *")
+            new_generation = st.selectbox("何期生か *", GENERATIONS, index=None, placeholder="選択してください")
+            new_year = st.selectbox("卒業年度 *", YEARS, index=None, placeholder="選択してください")
+            new_roles = st.multiselect("メイキョクでの役割 *", ROLES)
+            new_path = st.radio("卒業後の進路 *", PATHS, index=None)
+            create_submitted = st.form_submit_button("ユーザーを登録する", type="primary")
+            if create_submitted:
+                new_id, new_name, new_penname = new_id.strip(), new_name.strip(), new_penname.strip()
+                if not all([new_id, new_password, new_name, new_penname, new_generation, new_year, new_roles, new_path]):
+                    st.error("必須項目をすべて入力・選択してください。")
+                elif new_id in ("admin", "lil_3316", "aaaa", "yamada"):
+                    st.error("このIDは使用できません。")
+                elif get_user(new_id):
+                    st.error("このIDはすでに登録されています。")
+                elif new_password != new_confirm:
+                    st.error("確認用パスワードが一致しません。")
+                else:
+                    create_user(new_id, new_password, new_name, new_penname)
+                    save_record(new_id, {
+                        "owner_username": new_id, "name": new_name,
+                        "penname": new_penname, "discord": new_id,
+                        "generation": new_generation, "grad_year": new_year,
+                        "meikyoku_roles": new_roles, "career_path": new_path,
+                        "phone": "", "instagram": "", "optional_contact": "",
+                        "status": "draft"
+                    })
+                    st.success("ユーザーを登録しました。")
+                    st.rerun()
 
     users = get_users()
     st.metric("登録ユーザー数", len(users))
@@ -1031,6 +1118,15 @@ elif selected_tab == "⚙️ 管理者画面":
                     use_container_width=True
                 ):
                     admin_change_password(username)
+
+            if username != ADMIN_ID:
+                with st.expander("🗑️ このユーザーを削除する"):
+                    st.warning("アカウントとプロフィールを削除します。質問・回答は残り、投稿者名が「unknownユーザー」に変わります。元には戻せません。")
+                    delete_check = st.checkbox("削除することを確認しました", key=f"delete_user_check_{username}")
+                    delete_id = st.text_input("確認のためDiscord IDを入力", key=f"delete_user_id_{username}")
+                    if st.button("ユーザーを完全削除", key=f"delete_user_{username}", disabled=not delete_check or delete_id != username):
+                        if admin_delete_account(username):
+                            st.rerun()
 
             st.markdown("---")
 
