@@ -288,6 +288,35 @@ def create_user(username, password, name, penname):
         """, (username, hash_password(password), name, penname))
 
 
+def admin_change_user_id(old_id, new_id):
+    """管理者によるID変更。投稿・回答の所有権も新IDへ移す。"""
+    new_id = new_id.strip()
+    if old_id == ADMIN_ID or not new_id or new_id == ADMIN_ID:
+        return False, "このIDには変更できません。"
+    if new_id in ("lil_3316", "aaaa", "yamada"):
+        return False, "このIDは使用できません。"
+    with get_connection() as conn:
+        if conn.execute("SELECT 1 FROM users WHERE username = ?", (new_id,)).fetchone():
+            return False, "変更先のIDはすでに使われています。"
+        if not conn.execute("SELECT 1 FROM users WHERE username = ?", (old_id,)).fetchone():
+            return False, "変更対象のユーザーが見つかりません。"
+        conn.execute("UPDATE users SET username = ? WHERE username = ?", (new_id, old_id))
+        rows = conn.execute("SELECT data_json FROM records WHERE owner_username = ?", (old_id,)).fetchall()
+        for row in rows:
+            data = json.loads(row["data_json"])
+            data["owner_username"] = new_id
+            # Discord IDが旧ログインIDと一致する場合だけ更新する
+            if data.get("discord") == old_id:
+                data["discord"] = new_id
+            conn.execute(
+                "UPDATE records SET owner_username = ?, discord = ?, data_json = ? WHERE owner_username = ?",
+                (new_id, data.get("discord"), json.dumps(data, ensure_ascii=False), old_id)
+            )
+        conn.execute("UPDATE questions SET asker_username = ? WHERE asker_username = ?", (new_id, old_id))
+        conn.execute("UPDATE answers SET username = ? WHERE username = ?", (new_id, old_id))
+    return True, "ログインIDを変更しました。次回から新しいIDでログインできます。"
+
+
 def update_password(username, password):
     with get_connection() as conn:
         conn.execute(
@@ -1118,6 +1147,24 @@ elif selected_tab == "⚙️ 管理者画面":
                     use_container_width=True
                 ):
                     admin_change_password(username)
+
+            if username != ADMIN_ID:
+                with st.expander("🪪 ログインIDを変更する"):
+                    st.caption("質問・回答とプロフィールの紐づけは維持されます。パスワードは変わりません。")
+                    with st.form(f"change_id_{username}"):
+                        new_username = st.text_input("新しいDiscord ID", value=username)
+                        confirm_id = st.checkbox("ID変更を確認しました")
+                        submitted_id = st.form_submit_button("IDを変更する", disabled=not confirm_id)
+                        if submitted_id:
+                            if new_username.strip() == username:
+                                st.warning("現在と異なるIDを入力してください。")
+                            else:
+                                ok, message = admin_change_user_id(username, new_username)
+                                if ok:
+                                    st.success(message)
+                                    st.rerun()
+                                else:
+                                    st.error(message)
 
             if username != ADMIN_ID:
                 with st.expander("🗑️ このユーザーを削除する"):
