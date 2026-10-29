@@ -628,6 +628,13 @@ def profile_editor(username, key_prefix, administrator=False):
                 label, value=val(field)
             )
 
+        # 進路の種類に関係なく、プロフィールの最後に自由記述欄を表示
+        other_notes = st.text_area(
+            "その他(自由記述)",
+            value=val("other_notes"),
+            help="他のメンバーに公開してよい内容を入力してください。"
+        )
+
         if administrator:
             status = st.selectbox(
                 "公開状態",
@@ -667,6 +674,7 @@ def profile_editor(username, key_prefix, administrator=False):
                     "phone": phone,
                     "instagram": instagram,
                     "optional_contact": optional_contact.strip(),
+                    "other_notes": other_notes,
                     "meikyoku_roles": roles,
                     "career_path": career_path,
                     "industry": industry if career_path == "就職" else "",
@@ -743,6 +751,7 @@ def show_profile(username):
         record.get("career_path"), {}
     ).items():
         st.write(f"**{label}：** {record.get(field) or '未記入'}")
+    st.write(f"**その他(自由記述)：** {record.get('other_notes') or '未記入'}")
 
 
 # ==========================================
@@ -875,6 +884,7 @@ if selected_tab == "📋 登録情報一覧（トップ）":
                 st.write(
                     f"**{label}：** {record.get(field) or '未記入'}"
                 )
+            st.write(f"**その他(自由記述)：** {record.get('other_notes') or '未記入'}")
 
 
     with tab1:
@@ -1085,8 +1095,23 @@ elif selected_tab == "⚙️ 管理者画面":
         placeholder="名前・メイキョクネーム・ID"
     )
 
+    # 管理者画面のユーザー一覧も期生順に並べる（管理者は最後）
+    user_generations = {
+        target["username"]: (get_record(target["username"]) or {}).get("generation")
+        for target in users if target["username"] != ADMIN_ID
+    }
+    users.sort(key=lambda target: (
+        target["username"] == ADMIN_ID,
+        generation_number(user_generations.get(target["username"])),
+        target["name"] or ""
+    ))
+    last_generation = None
     for target in users:
         username = target["username"]
+        generation_label = (
+            "管理者" if username == ADMIN_ID
+            else user_generations.get(username) or "期生未設定"
+        )
 
         search_text = (
             username + target["name"] + target["penname"]
@@ -1094,6 +1119,10 @@ elif selected_tab == "⚙️ 管理者画面":
 
         if search and search.lower() not in search_text:
             continue
+
+        if generation_label != last_generation:
+            st.markdown(f"#### {generation_label}")
+            last_generation = generation_label
 
         with st.expander(
             f"👤 {target['name']}（{target['penname']}）"
