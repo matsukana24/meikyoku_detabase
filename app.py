@@ -1,7 +1,5 @@
 
 import json
-import csv
-import io
 import os
 import re
 import sqlite3
@@ -460,48 +458,17 @@ def option_index(options, value, default=0):
     return options.index(value) if value in options else default
 
 
-def record_to_csv(record):
-    """公開プロフィール1人分をExcel向けUTF-8 BOM付きCSVに変換。"""
-    fields = [
-        ("name", "名前（本名）"),
-        ("penname", "メイキョクネーム"),
-        ("discord", "Discord ID"),
-        ("generation", "期生"),
-        ("grad_year", "卒業年度"),
-        ("meikyoku_roles", "メイキョクでの業務内容"),
-        ("career_path", "卒業後の進路"),
-        ("industry", "就職先の業界"),
-        ("phone", "電話番号"),
-        ("instagram", "Instagram ID"),
-        ("optional_contact", "その他の連絡先"),
-    ]
-    for path in PATHS:
-        fields.extend(DETAIL_FIELDS[path].items())
-
-    output = io.StringIO(newline="")
-    writer = csv.writer(output)
-    writer.writerow([label for _, label in fields])
-    values = []
-    for key, _ in fields:
-        value = record.get(key, "")
-        if isinstance(value, list):
-            value = "、".join(map(str, value))
-        value = "" if value is None else str(value)
-        # Excel等で先頭の記号を数式として解釈されるのを防止。
-        if value.lstrip().startswith(("=", "+", "-", "@")):
-            value = "'" + value
-        values.append(value)
-    writer.writerow(values)
-    return ("\ufeff" + output.getvalue()).encode("utf-8")
-
-
 def generation_number(generation):
     numbers = re.findall(r"\d+", generation or "")
     return int(numbers[0]) if numbers else 999
 
 
-def is_graduated(generation):
-    return generation_number(generation) <= 5
+def member_category(record):
+    """手動指定を優先。旧データは従来の期生判定で表示する。"""
+    category = record.get("member_category")
+    if category in ("現役メンバー", "卒業メンバー"):
+        return category
+    return "卒業メンバー" if generation_number(record.get("generation")) <= 5 else "現役メンバー"
 
 
 if "logged_in_user" not in st.session_state:
@@ -609,6 +576,15 @@ def profile_editor(username, key_prefix, administrator=False):
             "卒業年", YEARS,
             index=option_index(YEARS, val("grad_year"), 5)
         )
+        member_type = st.selectbox(
+            "メンバー区分（手動切り替え）",
+            ["現役メンバー", "卒業メンバー"],
+            index=option_index(
+                ["現役メンバー", "卒業メンバー"],
+                member_category(record)
+            ),
+            help="期生や卒業年度に関係なく、ここで表示先を切り替えられます。"
+        )
         phone = st.text_input("電話番号", value=val("phone"))
         instagram = st.text_input(
             "Instagram ID", value=val("instagram")
@@ -687,6 +663,7 @@ def profile_editor(username, key_prefix, administrator=False):
                     "discord": discord,
                     "generation": generation,
                     "grad_year": grad_year,
+                    "member_category": member_type,
                     "phone": phone,
                     "instagram": instagram,
                     "optional_contact": optional_contact.strip(),
@@ -860,11 +837,11 @@ if selected_tab == "📋 登録情報一覧（トップ）":
 
     graduated = [
         r for r in filtered
-        if is_graduated(r.get("generation"))
+        if member_category(r) == "卒業メンバー"
     ]
     current = [
         r for r in filtered
-        if not is_graduated(r.get("generation"))
+        if member_category(r) == "現役メンバー"
     ]
 
     st.write(f"該当件数：**{len(filtered)}件**")
@@ -899,13 +876,6 @@ if selected_tab == "📋 登録情報一覧（トップ）":
                     f"**{label}：** {record.get(field) or '未記入'}"
                 )
 
-            st.download_button(
-                "📥 このメンバーの情報をCSV出力",
-                data=record_to_csv(record),
-                file_name=f"meikyoku_member_{record.get('owner_username', 'profile')}.csv",
-                mime="text/csv",
-                key=f"download_{record.get('owner_username')}",
-            )
 
     with tab1:
         if graduated:
@@ -1065,12 +1035,16 @@ elif selected_tab == "⚙️ 管理者画面":
             new_penname = st.text_input("メイキョクネーム *")
             new_generation = st.selectbox("何期生か *", GENERATIONS, index=None, placeholder="選択してください")
             new_year = st.selectbox("卒業年度 *", YEARS, index=None, placeholder="選択してください")
+            new_member_category = st.selectbox(
+                "メンバー区分 *", ["現役メンバー", "卒業メンバー"],
+                index=None, placeholder="選択してください"
+            )
             new_roles = st.multiselect("メイキョクでの役割 *", ROLES)
             new_path = st.radio("卒業後の進路 *", PATHS, index=None)
             create_submitted = st.form_submit_button("ユーザーを登録する", type="primary")
             if create_submitted:
                 new_id, new_name, new_penname = new_id.strip(), new_name.strip(), new_penname.strip()
-                if not all([new_id, new_password, new_name, new_penname, new_generation, new_year, new_roles, new_path]):
+                if not all([new_id, new_password, new_name, new_penname, new_generation, new_year, new_member_category, new_roles, new_path]):
                     st.error("必須項目をすべて入力・選択してください。")
                 elif new_id in ("admin", "lil_3316", "aaaa", "yamada"):
                     st.error("このIDは使用できません。")
@@ -1084,6 +1058,7 @@ elif selected_tab == "⚙️ 管理者画面":
                         "owner_username": new_id, "name": new_name,
                         "penname": new_penname, "discord": new_id,
                         "generation": new_generation, "grad_year": new_year,
+                        "member_category": new_member_category,
                         "meikyoku_roles": new_roles, "career_path": new_path,
                         "phone": "", "instagram": "", "optional_contact": "",
                         "status": "draft"
